@@ -1,23 +1,8 @@
 # Vocal-Scriber
 
-**Usage Examples:**
-
-```bash
-# 1. Basic usage (your typical workflow):
-python vocal-scriber.py --debug --device
-# 2. Test custom vocabulary:
-python vocal-scriber.py --vocab "Kubernetes,Docker,Claude"
-# 3. Test threshold tuning:
-python vocal-scriber.py --threshold 0.003
-# 4. Test API mode (if you have a remote server):
-python vocal-scriber.py --api http://localhost:8002/transcribe
-```
-  
 **Push-to-talk voice input for Claude Code CLI (and any terminal).**
 
 Press F9, speak, press F9 again — your words instantly appear in Claude Code's CLI prompt. Uses local Whisper transcription, no cloud API required.
-
-![Demo](assets/demo.gif)
 
 ---
 
@@ -31,47 +16,31 @@ Press F9, speak, press F9 again — your words instantly appear in Claude Code's
 
 ---
 
-## Quick Install
+## Quick Start
 
-### On Your First Machine
+### Installation
 
+**1. Clone or download this repository**
+
+**2. Install Python dependencies:**
 ```bash
-cd vocal-scriber-main
-./scripts/setup.sh
+cd vocal-scriber
+pip install -r requirements.txt
 ```
 
-This installs Python dependencies and sets up the virtual environment.
+**3. Grant permissions (macOS):**
+- **System Settings → Privacy & Security → Accessibility**
+- Add Terminal/VS Code, toggle ON
+- Microphone permission will prompt on first run
 
-### On Additional Machines
+**First run downloads Whisper model** (~500MB for `small` model, one-time download).
 
-1. **Create distribution package:**
-   ```bash
-   ./scripts/create_distribution.sh
-   ```
-   This creates `vocal-scriber-v1.0.zip` on your Desktop
-
-2. **Copy to new machine and install:**
-   ```bash
-   unzip vocal-scriber-v1.0.zip
-   cd vocal-scriber-v1.0
-   ./scripts/setup.sh
-   ```
-
-3. **Grant permissions on new machine:**
-   - **System Settings → Privacy & Security → Accessibility**
-   - Add Terminal/VS Code, toggle ON
-   - Microphone permission will prompt on first run
-
----
-
-## Usage
-
-### Starting Vocal-Scriber
+### Usage
 
 **Terminal 1 - Start Vocal-Scriber:**
 ```bash
-cd vocal-scriber-main
-./scripts/start_local.sh
+cd vocal-scriber
+python vocal-scriber.py
 ```
 
 *Leave this running in the background*
@@ -97,55 +66,82 @@ Press `Ctrl+C` in Terminal 1 to stop Vocal-Scriber.
 
 ---
 
-## Model Selection
+## Command-Line Options
 
-Default model is `base` (~150MB), which is fast but has some whitespace/punctuation issues.
-
-### Recommended: Use `small` Model
+### Basic Usage
 
 ```bash
-./scripts/start_local.sh --model small
+# Default: local Whisper with 'small' model
+python vocal-scriber.py
+
+# Use different model size
+python vocal-scriber.py --model base
+python vocal-scriber.py --model medium
+
+# Add custom vocabulary for better recognition
+python vocal-scriber.py --vocab "Kubernetes,Docker,Claude,Anthropic"
+
+# Debug mode
+python vocal-scriber.py --debug
+
+# Select microphone device interactively
+python vocal-scriber.py --device
+
+# Adjust speech detection sensitivity
+python vocal-scriber.py --threshold 0.003
 ```
 
-**Why upgrade from `base` to `small`:**
-- ✅ Much better punctuation and spacing
-- ✅ Fewer transcription errors
-- ✅ Still fast (~1-2s on M-series Macs)
-- ✅ Only 500MB download (one-time)
+### API Mode (Optional)
+
+Use a remote Whisper API instead of local transcription:
+
+```bash
+python vocal-scriber.py --api http://localhost:8002/transcribe
+python vocal-scriber.py --api http://localhost:8002/transcribe --api-model whisper-1
+```
+
+---
+
+## Model Selection
+
+Default model is **`small`** (~500MB), which provides good accuracy and speed.
 
 ### Model Comparison
 
 | Model | Size | Speed (M4 Pro) | Accuracy | Use Case |
 |-------|------|----------------|----------|----------|
 | `tiny` | 75MB | 0.5s | Basic | Testing only |
-| `base` | 150MB | 0.8s | Decent | Default, but has issues |
-| **`small`** | 500MB | 1.5s | **Good** | **Recommended** |
+| `base` | 150MB | 0.8s | Decent | Faster, lower accuracy |
+| **`small`** | 500MB | 1.5s | **Good** | **Default - Recommended** |
 | `medium` | 1.5GB | 2.5s | Great | High accuracy |
 | `large-v3` | 3GB | 4s | Best | Maximum quality |
 
-**Your M4 Pro can easily handle `small` or `medium`.**
+**Examples:**
+
+```bash
+# Faster transcription, lower accuracy
+python vocal-scriber.py --model base
+
+# Higher accuracy, slightly slower
+python vocal-scriber.py --model medium
+```
 
 ---
 
 ## File Structure
 
 ```
-vocal-scriber-main/
-├── README.md              # This file
-├── INSTALL.md             # Setup guide for new machines
-├── LICENSE                # MIT license
-├── requirements.txt       # Python dependencies
-├── vocal-scriber.py           # Main script (voice → text → paste)
-├── scripts/
-│   ├── setup.sh                  # Install dependencies
-│   ├── start_local.sh            # Start Vocal-Scriber
-│   └── create_distribution.sh    # Package for other machines
-├── assets/
-│   └── demo.gif          # README demo
-└── venv/                 # Python virtual environment (created by setup.sh)
+vocal-scriber/
+├── README.md                      # This file
+├── LICENSE                        # MIT license
+├── .gitignore                     # Git ignore patterns
+├── .env.example                   # Environment config reference
+├── requirements.txt               # Python dependencies (main script)
+├── requirements-diarization.txt   # Python dependencies (speaker diarization)
+├── vocal-scriber.py               # Main script (push-to-talk voice → text)
+├── diarize.py                     # Speaker diarization (file processing)
+└── venv/                          # Python virtual environment (created by pip)
 ```
-
-**Note:** `venv/` is excluded from distribution zips (gets recreated on each machine).
 
 ---
 
@@ -184,10 +180,9 @@ Paste to Currently Focused Window (Claude Code CLI)
 - Or pause briefly before pressing F9
 
 ### Extra whitespace in transcription
-- **Upgrade to `small` model** (fixes 90% of issues):
-  ```bash
-  ./scripts/start_local.sh --model small
-  ```
+- Default `small` model should handle this well
+- Try adding vocabulary context: `--vocab "common,terms,you,use"`
+- Or upgrade to `medium` model for better accuracy
 
 ### Text pastes to wrong window
 - **Click into Claude Code CLI** before pressing F9
@@ -195,9 +190,9 @@ Paste to Currently Focused Window (Claude Code CLI)
 - This is by design (avoids Space switching in full-screen mode)
 
 ### Slow transcription
-- You're likely using `base` model
-- Upgrade to `small` (still fast, better quality)
-- Or downgrade to `tiny` if speed is critical
+- You may be using `medium` or `large-v3` model
+- Switch to `small` for faster results: `python vocal-scriber.py --model small`
+- Or use `base` for maximum speed (lower accuracy)
 
 ### Permission errors
 - **System Settings → Privacy & Security → Accessibility**
@@ -205,11 +200,15 @@ Paste to Currently Focused Window (Claude Code CLI)
 - Restart Vocal-Scriber after granting permissions
 
 ### "No module named..." errors
-- Make sure virtual environment is activated:
+- Make sure you installed dependencies: `pip install -r requirements.txt`
+- If using a virtual environment, activate it first: `source venv/bin/activate`
+
+### Microphone not working
+- Use `--device` flag to select your microphone interactively:
   ```bash
-  source venv/bin/activate
+  python vocal-scriber.py --device
   ```
-- Or just use `./scripts/start_local.sh` (activates automatically)
+- Grant microphone permission when prompted
 
 ---
 
@@ -223,34 +222,47 @@ Paste to Currently Focused Window (Claude Code CLI)
 
 ---
 
-## Advanced Options
+## Advanced Features
 
-### Enable debug mode
-```bash
-./scripts/start_local.sh --debug
-```
-Shows detailed output (window detection, clipboard, paste commands)
+### Custom Vocabulary
 
-### Use different hotkey
+Help Whisper recognize technical terms or names:
+
 ```bash
-./scripts/start_local.sh --hotkey f8
+python vocal-scriber.py --vocab "Kubernetes,Docker,MLX,Anthropic,Claude"
 ```
 
-### Change language
+This improves accuracy for domain-specific terminology.
+
+### Adjust Speech Detection Threshold
+
+Control sensitivity for detecting speech:
+
 ```bash
-./scripts/start_local.sh --language es  # Spanish
+# More sensitive (picks up quieter speech)
+python vocal-scriber.py --threshold 0.002
+
+# Less sensitive (ignores background noise)
+python vocal-scriber.py --threshold 0.01
 ```
 
-### Adjust paste delay
+Default is `0.005`.
+
+### Debug Mode
+
+See detailed output (window detection, clipboard, paste commands):
+
 ```bash
-./scripts/start_local.sh --paste-delay 0.5
+python vocal-scriber.py --debug
 ```
 
 ---
 
 ## Speaker Diarization (Apple Silicon Only)
 
-**NEW:** Identify different speakers in audio recordings using MLX-optimized AI.
+**Identify different speakers in audio recordings using MLX-optimized AI.**
+
+This is a separate feature from push-to-talk voice input. Use `diarize.py` to process pre-recorded audio files with speaker identification.
 
 ### What is Speaker Diarization?
 
@@ -275,7 +287,6 @@ brew install ffmpeg
 
 **2. Install Python dependencies:**
 ```bash
-# From vocal-scriber directory
 pip install -r requirements-diarization.txt
 ```
 
@@ -391,34 +402,65 @@ Vocal-Scriber is designed to **start manually** when you need voice input, not r
 
 ## Distribution to Other Machines
 
-### Creating a Package
+### Method 1: Clone Repository
 
-On your current machine:
+**On new machine:**
 ```bash
-./scripts/create_distribution.sh
-```
+# Clone or copy the repository
+cd vocal-scriber
 
-This creates `vocal-scriber-v1.0.zip` on your Desktop (without venv, ~2MB).
+# Install dependencies
+pip install -r requirements.txt
 
-### Installing on New Machine
-
-```bash
-# 1. Copy zip to new machine
-# 2. Extract
-unzip vocal-scriber-v1.0.zip
-cd vocal-scriber-v1.0
-
-# 3. Run setup
-./scripts/setup.sh
-
-# 4. Grant permissions
+# Grant permissions (macOS)
 # System Settings → Privacy & Security → Accessibility → Add Terminal/VS Code
 
-# 5. Start using it
-./scripts/start_local.sh
+# Start using it
+python vocal-scriber.py
 ```
 
-**First run downloads the Whisper model** (~150MB for `base`, ~500MB for `small`).
+**First run downloads the Whisper model** (~500MB for `small`, ~150MB for `base`).
+
+### Method 2: Create Zip Package
+
+**On your current machine:**
+```bash
+# Create a zip excluding venv and cache files
+zip -r vocal-scriber.zip . -x "*.pyc" -x "*__pycache__*" -x "venv/*" -x ".git/*" -x ".claude/*" -x "*.log" -x "test*"
+```
+
+**On new machine:**
+```bash
+# Extract
+unzip vocal-scriber.zip
+cd vocal-scriber
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Grant permissions (macOS)
+# System Settings → Privacy & Security → Accessibility → Add Terminal/VS Code
+
+# Start using it
+python vocal-scriber.py
+```
+
+---
+
+## Environment Configuration
+
+The `.env.example` file documents optional environment variables:
+
+```bash
+# Copy the example file
+cp .env.example .env
+
+# Edit .env and add your configuration
+# Currently supports:
+# - HF_TOKEN: HuggingFace token for faster model downloads (diarization only)
+```
+
+The `.env` file is ignored by git (safe for tokens/secrets).
 
 ---
 
@@ -430,15 +472,9 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ## Tips for Best Results
 
-1. **Use `small` model** for better transcription quality
+1. **Use default `small` model** for best balance of speed and accuracy
 2. **Click into CLI** before pressing F9 (doesn't auto-focus by design)
 3. **Speak naturally** - don't over-articulate or rush
 4. **Pause before F9** - gives the 0.3s buffer time to capture your last word
-5. **Start Vocal-Scriber once** per coding session, leave it running
-
----
-
-## Questions?
-
-- See `INSTALL.md` for detailed setup instructions
-- Use `--debug` flag to troubleshoot issues
+5. **Add custom vocabulary** for technical terms: `--vocab "Docker,Kubernetes,Claude"`
+6. **Start Vocal-Scriber once** per coding session, leave it running
