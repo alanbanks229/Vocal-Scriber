@@ -47,3 +47,9 @@ models/
 .env
 .env.local
 config.local.py
+
+# Test files
+test*.txt
+test*.m4a
+test*.wav
+test*.mp3

@@ -1,0 +1,25 @@
+# Speaker Diarization Dependencies (Apple Silicon only)
+# Install with: pip install -r requirements-diarization.txt
+#
+# NOTE: These dependencies are ONLY for diarize.py
+# The main vocal-scriber.py does NOT require these.
+#
+# SYSTEM REQUIREMENT (not a Python package):
+# - ffmpeg: Required for M4A/MP3/FLAC audio decoding
+#   Install: brew install ffmpeg
+
+# MLX framework for Apple Silicon optimization
+mlx>=0.10.0
+
+# MLX-Audio for VibeVoice-ASR speaker diarization
+mlx-audio>=0.1.0
+
+# Required for MLX-Audio (if not already installed)
+numpy>=1.24.0
+soundfile>=0.12.0  # For audio file I/O
+
+# Optional: Load HF_TOKEN from .env file for faster downloads
+python-dotenv>=1.0.0
+
+# Optional: Memory usage tracking for --debug mode
+psutil>=5.9.0

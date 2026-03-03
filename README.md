@@ -248,6 +248,129 @@ Shows detailed output (window detection, clipboard, paste commands)
 
 ---
 
+## Speaker Diarization (Apple Silicon Only)
+
+**NEW:** Identify different speakers in audio recordings using MLX-optimized AI.
+
+### What is Speaker Diarization?
+
+Speaker diarization identifies "who spoke when" in audio recordings:
+- Meeting transcriptions with speaker labels
+- Interview transcripts with speaker identification
+- Multi-speaker recordings with timestamps
+
+### Requirements
+
+- **Apple Silicon Mac** (M1/M2/M3/M4)
+- **~10GB disk space** (for VibeVoice-ASR model)
+- **ffmpeg** (for M4A/MP3 audio decoding)
+- **Additional dependencies** (separate from main vocal-scriber)
+
+### Installation
+
+**1. Install ffmpeg (required for M4A/MP3 files):**
+```bash
+brew install ffmpeg
+```
+
+**2. Install Python dependencies:**
+```bash
+# From vocal-scriber directory
+pip install -r requirements-diarization.txt
+```
+
+**3. (Optional) Configure HuggingFace token for faster downloads:**
+```bash
+# Copy the example file
+cp .env.example .env
+
+# Edit .env and add your HuggingFace token
+# Get token at: https://huggingface.co/settings/tokens
+```
+
+This enables faster model downloads on first run. Without it, downloads still work but may be slower.
+
+**First run downloads ~9GB model** (one-time, stored in HuggingFace cache at `~/.cache/huggingface/`).
+
+**Note:** WAV files work without ffmpeg, but M4A/MP3/FLAC require it for audio decoding.
+
+### Usage
+
+**Basic diarization:**
+```bash
+python diarize.py meeting.wav
+```
+
+Output:
+```
+[0.0-5.2] Speaker 0: Hello everyone, let's begin the meeting.
+[5.5-9.8] Speaker 1: Thanks for joining today.
+[10.2-15.0] Speaker 0: Let's start with the agenda.
+```
+
+**With vocabulary context (improves accuracy):**
+```bash
+python diarize.py audio.wav --context "Claude, Anthropic, MLX, Kubernetes, Docker"
+```
+
+**Save to file (text format):**
+```bash
+python diarize.py meeting.mp3 --output transcript.txt
+```
+
+**Save to file (JSON format):**
+```bash
+python diarize.py audio.wav --output result.json
+```
+
+**Show progress during processing:**
+```bash
+python diarize.py meeting.wav --verbose
+```
+
+**Debug memory and performance:**
+```bash
+python diarize.py audio.m4a --debug --verbose
+```
+
+**Override max_tokens for very long audio:**
+```bash
+python diarize.py long_meeting.wav --max-tokens 16384
+```
+
+### Supported Audio Formats
+
+- WAV
+- MP3
+- M4A
+- FLAC
+
+### Performance
+
+On Apple Silicon (M1/M2/M3/M4):
+- **~4-6x realtime** (10 minutes of audio processes in ~2 minutes)
+- **Auto-optimized memory usage** - max_tokens calculated based on audio duration
+- Uses Metal GPU acceleration
+- Much faster than PyTorch-based alternatives (~10x speedup)
+- Use `--debug` flag to see actual memory usage and timing statistics
+
+### Limitations
+
+- **Apple Silicon only** - Requires arm64 architecture
+- **Not for real-time** - Processes pre-recorded files only
+- **Large model** - VibeVoice-ASR is ~9GB (one-time download)
+- **Separate from push-to-talk** - Use `vocal-scriber.py` for F9 hotkey transcription
+
+### Why a Separate Script?
+
+`diarize.py` is separate from `vocal-scriber.py` because:
+1. Different use case (file processing vs real-time push-to-talk)
+2. Different dependencies (MLX vs faster-whisper)
+3. Larger model size (~9GB vs ~500MB)
+4. Optional feature (not everyone needs speaker identification)
+
+---
+
 ## Why Not Run as a Service?
 
 Vocal-Scriber is designed to **start manually** when you need voice input, not run 24/7.
