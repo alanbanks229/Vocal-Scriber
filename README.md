@@ -3,14 +3,14 @@
 **Usage Examples:**
 
 ```bash
-# Default (base model)
-python3 vocal-scriber.py
-
-# Use small model for better accuracy
-python3 vocal-scriber.py --model small
-
-# Use large model for best accuracy
-python3 vocal-scriber.py --model large-v3
+# 1. Basic usage (your typical workflow):
+python vocal-scriber.py --debug --device
+# 2. Test custom vocabulary:
+python vocal-scriber.py --vocab "Kubernetes,Docker,Claude"
+# 3. Test threshold tuning:
+python vocal-scriber.py --threshold 0.003
+# 4. Test API mode (if you have a remote server):
+python vocal-scriber.py --api http://localhost:8002/transcribe
 ```
   
 **Push-to-talk voice input for Claude Code CLI (and any terminal).**

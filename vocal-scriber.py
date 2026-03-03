@@ -2,26 +2,31 @@
 """
 Vocal-Scriber - Push-to-talk voice typing for your terminal.
 
-Press a hotkey, speak, press again - your words appear wherever you're typing.
+Press F9, speak, press F9 again - your words appear wherever you're typing.
 Works on Linux, Windows, and macOS with local Whisper transcription.
+Always uses English language and F9 hotkey.
 
 Usage:
-    python vocal-scriber.py [--api URL] [--model MODEL] [--hotkey KEY]
+    python vocal-scriber.py [--api URL] [--model MODEL]
 
 Examples:
-    python vocal-scriber.py                          # Use local faster-whisper
+    python vocal-scriber.py                          # Use local faster-whisper (small model)
     python vocal-scriber.py --api http://localhost:8002/transcribe  # Use API
-    python vocal-scriber.py --model small            # Use small model
-    python vocal-scriber.py --hotkey f8              # Use F8 instead of F9
+    python vocal-scriber.py --model base             # Use base model instead of small
+    python vocal-scriber.py --debug --device         # Debug mode with device selector
 """
 
 import argparse
+import contextlib
 import io
+import os
 import platform
 import subprocess
 import sys
+import termios
 import threading
 import time
+import tty
 from pathlib import Path
 
 import numpy as np
@@ -34,25 +39,21 @@ from scipy.io import wavfile
 # === Configuration ===
 SAMPLE_RATE = 16000
 LANGUAGE = "en"
-DEFAULT_MODEL = "base"
+DEFAULT_MODEL = "small"
 SYSTEM = platform.system()  # "Linux", "Windows", "Darwin" (macOS)
 
-# Terminal identifiers per OS
-TERMINALS = {
-    "Linux": [
-        "gnome-terminal", "xterm", "konsole", "alacritty", "kitty",
-        "terminator", "tilix", "xfce4-terminal", "urxvt", "st",
-        "sakura", "guake", "tilda", "hyper", "wezterm"
-    ],
-    "Windows": [
-        "WindowsTerminal", "cmd.exe", "powershell", "pwsh",
-        "ConEmu", "mintty", "Hyper", "Terminus"
-    ],
-    "Darwin": [
-        "Terminal", "iTerm", "iTerm2", "Hyper", "kitty",
-        "alacritty", "wezterm"
-    ]
-}
+
+# === Utility Functions ===
+@contextlib.contextmanager
+def suppress_stdout():
+    """Temporarily redirect stdout to devnull."""
+    old_stdout = sys.stdout
+    with open(os.devnull, 'w') as devnull:
+        sys.stdout = devnull
+        try:
+            yield
+        finally:
+            sys.stdout = old_stdout
 
 
 # === State ===
@@ -66,9 +67,9 @@ state = State.IDLE
 state_lock = threading.Lock()
 audio_chunks: list[np.ndarray] = []
 stream: sd.InputStream | None = None
-target_window = None
 whisper_model = None
 config = None
+selected_device = None  # Will store the selected audio input device index
 
 
 # === Argument Parsing ===
@@ -78,10 +79,10 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python vocal-scriber.py                     # Use local faster-whisper
+  python vocal-scriber.py                     # Use local faster-whisper (small model)
   python vocal-scriber.py --api http://localhost:8002/transcribe
-  python vocal-scriber.py --model small       # Use 'small' model for better accuracy
-  python vocal-scriber.py --hotkey f8         # Use F8 instead of F9
+  python vocal-scriber.py --model base        # Use 'base' model instead
+  python vocal-scriber.py --debug --device    # Debug mode with device selector
   python vocal-scriber.py --vocab "Kubernetes,Docker,React"  # Add custom vocabulary
         """
     )
@@ -100,48 +101,87 @@ Examples:
         help=f"Whisper model size: tiny, base, small, medium, large-v3 (default: {DEFAULT_MODEL})"
     )
     parser.add_argument(
-        "--hotkey", "-k",
-        default="f9",
-        help="Hotkey to use (default: f9). Examples: f8, f10, f12"
-    )
-    parser.add_argument(
-        "--language", "-l",
-        default=LANGUAGE,
-        help=f"Language code for transcription (default: {LANGUAGE})"
-    )
-    parser.add_argument(
-        "--minimal", "-M",
-        action="store_true",
-        help="Minimal UI - only show status (great for demos)"
-    )
-    parser.add_argument(
-        "--paste-delay",
-        type=float,
-        default=0.05,
-        help="Delay in seconds before pasting (increase if paste goes to wrong window)"
-    )
-    parser.add_argument(
         "--debug",
         action="store_true",
-        help="Enable debug output to troubleshoot window focus issues"
-    )
-    parser.add_argument(
-        "--manual-focus-delay",
-        type=float,
-        default=0.0,
-        help="Seconds to wait after transcription before pasting (gives you time to manually click)"
-    )
-    parser.add_argument(
-        "--refocus",
-        action="store_true",
-        help="Try to refocus the original window before pasting (disabled by default)"
+        help="Enable debug output"
     )
     parser.add_argument(
         "--vocab",
         default=None,
         help="Additional vocabulary/technical terms to help Whisper recognize (comma-separated)"
     )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=0.005,
+        help="Audio energy threshold for speech detection (lower=more sensitive, default: 0.005)"
+    )
+    parser.add_argument(
+        "--device",
+        action="store_true",
+        help="Show interactive microphone device selector"
+    )
     return parser.parse_args()
+
+
+# === Device Selection ===
+def select_audio_device():
+    """Interactive microphone selection."""
+    global selected_device
+
+    devices = sd.query_devices()
+    input_devices = []
+
+    # Collect all input devices
+    for i, device in enumerate(devices):
+        if device['max_input_channels'] > 0:
+            input_devices.append({
+                'index': i,
+                'name': device['name'],
+                'channels': device['max_input_channels'],
+                'sample_rate': device['default_samplerate'],
+                'hostapi': sd.query_hostapis(device['hostapi'])['name'],
+                'is_default': i == sd.default.device[0]
+            })
+
+    if not input_devices:
+        print("No input devices found!")
+        sys.exit(1)
+
+    print("\nAvailable Microphones:")
+    print("=" * 60)
+
+    for idx, dev in enumerate(input_devices, 1):
+        default_marker = " ⭐ (current system default)" if dev['is_default'] else ""
+        print(f"\n{idx}. {dev['name']}{default_marker}")
+        print(f"   Channels: {dev['channels']}, Sample Rate: {dev['sample_rate']:.0f} Hz")
+
+    print("\n" + "=" * 60)
+
+    # Prompt user for selection
+    while True:
+        try:
+            choice = input(f"\nSelect microphone (1-{len(input_devices)}) or press Enter for default: ").strip()
+
+            if choice == "":
+                # Use system default
+                selected_device = None
+                default_dev = next(d for d in input_devices if d['is_default'])
+                print(f"Using default: {default_dev['name']}\n")
+                return
+
+            choice_num = int(choice)
+            if 1 <= choice_num <= len(input_devices):
+                selected_device = input_devices[choice_num - 1]['index']
+                print(f"Selected: {input_devices[choice_num - 1]['name']}\n")
+                return
+            else:
+                print(f"Please enter a number between 1 and {len(input_devices)}")
+        except ValueError:
+            print("Invalid input. Please enter a number.")
+        except KeyboardInterrupt:
+            print("\nCancelled.")
+            sys.exit(0)
 
 
 # === Dependency Checks ===
@@ -229,165 +269,13 @@ def set_terminal_title(title: str):
 
 
 def show_status(status: str, detail: str = ""):
-    """Show status in minimal mode (clears and centers)."""
-    if not config.minimal:
-        if detail:
-            print(f"{status} {detail}")
-        else:
-            print(status)
-        return
-
-    # Clear screen and show centered status
-    sys.stdout.write("\033[2J\033[H")  # Clear screen, move to top
-    sys.stdout.write("\n" * 8)  # Padding from top
-    sys.stdout.write(f"{'─' * 40}\n")
-    sys.stdout.write(f"{status:^40}\n")
+    """Show status message."""
+    sys.stdout.write('\n')
     if detail:
-        # Truncate detail if too long
-        detail = detail[:36] + "..." if len(detail) > 36 else detail
-        sys.stdout.write(f"{detail:^40}\n")
-    sys.stdout.write(f"{'─' * 40}\n")
+        print(f"{status} {detail}")
+    else:
+        print(status)
     sys.stdout.flush()
-
-
-# === Window Management (OS-specific) ===
-def get_active_window():
-    """Get the currently focused window identifier."""
-    try:
-        if SYSTEM == "Linux":
-            return subprocess.check_output(
-                ["xdotool", "getactivewindow"],
-                stderr=subprocess.DEVNULL
-            ).strip()
-        elif SYSTEM == "Windows":
-            import ctypes
-            return ctypes.windll.user32.GetForegroundWindow()
-        elif SYSTEM == "Darwin":
-            # Get both name and bundle identifier
-            script = '''
-            tell application "System Events"
-                set frontProc to first process whose frontmost is true
-                set procName to name of frontProc
-                set procBundle to bundle identifier of frontProc
-                return procName & "|" & procBundle
-            end tell
-            '''
-            result = subprocess.check_output(["osascript", "-e", script], stderr=subprocess.DEVNULL)
-            return result.strip()
-    except:
-        return None
-    return None
-
-
-def is_vscode(window_id) -> bool:
-    """Check if window is VS Code."""
-    if not window_id:
-        return False
-    try:
-        if SYSTEM == "Darwin":
-            window_str = window_id.decode() if isinstance(window_id, bytes) else str(window_id)
-            # Check for VS Code bundle identifier or name
-            return ("com.microsoft.vscode" in window_str.lower() or
-                    "visual studio code" in window_str.lower() or
-                    ("|" in window_str and "electron" in window_str.lower() and
-                     "com.microsoft.vscode" in window_str.lower()))
-    except:
-        pass
-    return False
-
-
-def focus_window(window_id):
-    """Focus a specific window."""
-    if not window_id:
-        return
-    try:
-        if SYSTEM == "Linux":
-            subprocess.run(
-                ["xdotool", "windowactivate", "--sync", window_id],
-                stderr=subprocess.DEVNULL
-            )
-        elif SYSTEM == "Windows":
-            import ctypes
-            ctypes.windll.user32.SetForegroundWindow(window_id)
-        elif SYSTEM == "Darwin":
-            # macOS: window_id format is "name|bundle_id"
-            window_str = window_id.decode() if isinstance(window_id, bytes) else str(window_id)
-            app_name = window_str.split("|")[0] if "|" in window_str else window_str
-
-            # Special handling for VS Code - focus terminal pane
-            if is_vscode(window_id):
-                if config.debug:
-                    print(f"[DEBUG] Activating VS Code using open command...")
-
-                # Use bundle identifier to activate the correct app (more reliable)
-                window_str = window_id.decode() if isinstance(window_id, bytes) else str(window_id)
-                bundle_id = window_str.split("|")[1] if "|" in window_str else "com.microsoft.VSCode"
-
-                # Try using 'open' command which works better with full-screen apps
-                result = subprocess.run(
-                    ["open", "-b", bundle_id],
-                    capture_output=True, text=True
-                )
-                if config.debug and result.returncode != 0:
-                    print(f"[DEBUG] Open command error: {result.stderr}")
-
-                time.sleep(0.5)
-
-                # Then send Ctrl+` to focus terminal
-                focus_script = '''
-                tell application "System Events"
-                    key code 50 using control down
-                end tell
-                '''
-                result = subprocess.run(["osascript", "-e", focus_script],
-                                       capture_output=True, text=True)
-                time.sleep(0.25)
-
-                if config.debug:
-                    if result.returncode != 0:
-                        print(f"[DEBUG] Terminal focus error: {result.stderr}")
-                    else:
-                        print(f"[DEBUG] VS Code terminal focus sent")
-            else:
-                # Normal activation for other apps
-                script = f'tell application "{app_name}" to activate'
-                subprocess.run(["osascript", "-e", script], stderr=subprocess.DEVNULL)
-    except:
-        pass
-
-
-def is_terminal_window(window_id) -> bool:
-    """Check if the window is a terminal."""
-    try:
-        if SYSTEM == "Linux":
-            wm_class = subprocess.check_output(
-                ["xprop", "-id", window_id, "WM_CLASS"],
-                stderr=subprocess.DEVNULL
-            ).decode().lower()
-            return any(t in wm_class for t in TERMINALS.get("Linux", []))
-
-        elif SYSTEM == "Windows":
-            import ctypes
-            buffer = ctypes.create_unicode_buffer(256)
-            ctypes.windll.user32.GetWindowTextW(window_id, buffer, 256)
-            title = buffer.value.lower()
-            class_buffer = ctypes.create_unicode_buffer(256)
-            ctypes.windll.user32.GetClassNameW(window_id, class_buffer, 256)
-            class_name = class_buffer.value
-            return any(t.lower() in title or t.lower() in class_name.lower()
-                      for t in TERMINALS.get("Windows", []))
-
-        elif SYSTEM == "Darwin":
-            # VS Code with terminal counts as terminal
-            if is_vscode(window_id):
-                return True
-            # window_id format is "name|bundle_id"
-            window_str = window_id.decode() if isinstance(window_id, bytes) else str(window_id)
-            app_name = window_str.split("|")[0] if "|" in window_str else window_str
-            return any(t.lower() in app_name.lower() for t in TERMINALS.get("Darwin", []))
-    except:
-        pass
-    return False
 
 
 # === Recording ===
@@ -398,19 +286,26 @@ def audio_callback(indata, frames, time_info, status):
 
 def start_recording():
     """Start recording from microphone."""
-    global stream, audio_chunks, target_window
-    target_window = get_active_window()
-    if config.debug and target_window:
-        window_str = target_window.decode() if isinstance(target_window, bytes) else str(target_window)
-        print(f"[DEBUG] Captured window: {window_str}")
-        print(f"[DEBUG] Is VS Code: {is_vscode(target_window)}")
+    global stream, audio_chunks
     audio_chunks = []
-    stream = sd.InputStream(
-        samplerate=SAMPLE_RATE,
-        channels=1,
-        dtype='float32',
-        callback=audio_callback
-    )
+
+    # Use selected device if specified, otherwise use system default
+    stream_params = {
+        'samplerate': SAMPLE_RATE,
+        'channels': 1,
+        'dtype': 'float32',
+        'callback': audio_callback
+    }
+    if selected_device is not None:
+        stream_params['device'] = selected_device
+        if config.debug:
+            device_info = sd.query_devices(selected_device)
+            print(f"[DEBUG] Recording from: {device_info['name']}")
+    elif config.debug:
+        device_info = sd.query_devices(sd.default.device[0])
+        print(f"[DEBUG] Recording from: {device_info['name']} (system default)")
+
+    stream = sd.InputStream(**stream_params)
     stream.start()
     beep_start()
     set_terminal_title("🎤 RECORDING...")
@@ -452,13 +347,28 @@ def is_hallucination(text: str) -> bool:
     t = text.lower().strip()
     if len(t) < 3:
         return True
-    return any(h in t for h in HALLUCINATIONS) and len(t) < 30
+
+    # Check if text is ONLY hallucination words/phrases
+    if len(t) < 30:
+        for hall in HALLUCINATIONS:
+            # Check if the hallucination phrase is the entire content (with small variation)
+            if hall in t and len(t) <= len(hall) + 5:
+                return True
+
+    return False
 
 
-def has_speech(audio: np.ndarray, threshold: float = 0.01) -> bool:
+def has_speech(audio: np.ndarray, threshold: float = None) -> bool:
     """Check if audio contains actual speech (energy-based)."""
+    if threshold is None:
+        threshold = config.threshold if config else 0.005
     energy = np.sqrt(np.mean(audio ** 2))
-    return energy > threshold
+    has_speech_result = energy > threshold
+
+    if config and config.debug:
+        print(f"[DEBUG] Audio energy: {energy:.6f}, threshold: {threshold:.6f}, has_speech: {has_speech_result}")
+
+    return has_speech_result
 
 
 def is_openai_api(url: str) -> bool:
@@ -476,13 +386,13 @@ def transcribe_api(wav_buffer: io.BytesIO) -> str:
         files = {"file": ("audio.wav", wav_buffer, "audio/wav")}
         data = {
             "model": config.api_model or "whisper-1",
-            "language": config.language,
+            "language": LANGUAGE,
             "response_format": "json"
         }
     else:
         # Custom API format (e.g., local faster-whisper server)
         files = {"file": ("audio.wav", wav_buffer, "audio/wav")}
-        data = {"language": config.language}
+        data = {"language": LANGUAGE}
 
     resp = requests.post(config.api, files=files, data=data, timeout=60)
     resp.raise_for_status()
@@ -546,11 +456,13 @@ def transcribe(audio: np.ndarray) -> str:
         if config.vocab:
             initial_prompt += ", " + config.vocab
 
-        segments, _ = whisper_model.transcribe(
-            audio_for_whisper,
-            language=config.language,
-            initial_prompt=initial_prompt
-        )
+        # Suppress faster-whisper stdout to prevent output interference
+        with suppress_stdout():
+            segments, _ = whisper_model.transcribe(
+                audio_for_whisper,
+                language=LANGUAGE,
+                initial_prompt=initial_prompt
+            )
         text = " ".join(seg.text.strip() for seg in segments).strip()
 
     # Apply post-processing to fix common misrecognitions
@@ -559,7 +471,7 @@ def transcribe(audio: np.ndarray) -> str:
 
 # === Paste ===
 def paste_text(text: str):
-    """Paste text into the target window."""
+    """Paste text into the frontmost window."""
     if config.debug:
         print(f"[DEBUG] Pasting text: '{text[:50]}...'")
 
@@ -578,102 +490,28 @@ def paste_text(text: str):
         clipboard_check = pyperclip.paste()
         print(f"[DEBUG] Clipboard verified: {clipboard_check[:50]}...")
 
-    # Manual focus delay (gives user time to click into terminal)
-    if config.manual_focus_delay > 0:
-        if config.debug:
-            print(f"[DEBUG] Waiting {config.manual_focus_delay}s for manual focus...")
-        time.sleep(config.manual_focus_delay)
+    # Small delay to let transcription UI clear
+    time.sleep(0.1)
 
-    # Focus original window (only if --refocus is set)
-    if config.refocus:
-        if config.debug and target_window:
-            window_str = target_window.decode() if isinstance(target_window, bytes) else str(target_window)
-            print(f"[DEBUG] Focusing window: {window_str}")
-            print(f"[DEBUG] Is VS Code: {is_vscode(target_window)}")
-
-        focus_window(target_window)
-
-        # Extra delay for VS Code on macOS to let terminal focus settle
-        delay = config.paste_delay
-        if SYSTEM == "Darwin" and is_vscode(target_window):
-            delay = max(delay, 0.35)
-
-        if config.debug:
-            print(f"[DEBUG] Paste delay: {delay}s")
-
-        time.sleep(delay)
-    else:
-        if config.debug:
-            print(f"[DEBUG] Skipping window focus (default behavior)")
-        # Small delay to let transcription UI clear
-        time.sleep(0.1)
-
-    # Determine paste shortcut
-    is_terminal = is_terminal_window(target_window) if target_window else False
-
-    if config.debug:
-        print(f"[DEBUG] Is terminal: {is_terminal}")
-
+    # Send paste command to frontmost app
     if SYSTEM == "Linux":
-        key = "ctrl+shift+v" if is_terminal else "ctrl+v"
-        subprocess.run(["xdotool", "key", key], stderr=subprocess.DEVNULL)
-
+        # Try both terminal and non-terminal paste shortcuts
+        subprocess.run(["xdotool", "key", "ctrl+shift+v"], stderr=subprocess.DEVNULL)
     elif SYSTEM == "Windows":
         import pyautogui
-        if is_terminal:
-            # Windows Terminal and modern terminals use Ctrl+V
-            pyautogui.hotkey('ctrl', 'v')
-        else:
-            pyautogui.hotkey('ctrl', 'v')
-
+        pyautogui.hotkey('ctrl', 'v')
     elif SYSTEM == "Darwin":
-        # By default, just send keystroke to frontmost app
-        if not config.refocus:
-            if config.debug:
-                print(f"[DEBUG] Sending paste via AppleScript to frontmost process")
-
-            paste_script = '''
-            tell application "System Events"
-                keystroke "v" using command down
-            end tell
-            '''
-            result = subprocess.run(["osascript", "-e", paste_script],
-                                   capture_output=True, text=True)
-            if config.debug:
-                if result.returncode != 0:
-                    print(f"[DEBUG] Paste error: {result.stderr}")
-                else:
-                    print(f"[DEBUG] Paste command sent to frontmost process")
-        # For VS Code, use AppleScript to send paste command for better reliability
-        elif is_vscode(target_window):
-            window_str = target_window.decode() if isinstance(target_window, bytes) else str(target_window)
-            app_name = window_str.split("|")[0] if "|" in window_str else window_str
-
-            if config.debug:
-                print(f"[DEBUG] Sending paste via AppleScript to {app_name}")
-
-            paste_script = f'''
-            tell application "System Events"
-                tell process "{app_name}"
-                    keystroke "v" using command down
-                end tell
-            end tell
-            '''
-            result = subprocess.run(["osascript", "-e", paste_script],
-                                   capture_output=True, text=True)
-            if config.debug:
-                if result.returncode != 0:
-                    print(f"[DEBUG] Paste error: {result.stderr}")
-                else:
-                    print(f"[DEBUG] Paste command sent via AppleScript")
-        else:
-            # For other apps, use pyautogui
-            import pyautogui
-            if config.debug:
-                print(f"[DEBUG] Sending paste command: Command+V via pyautogui")
-            pyautogui.hotkey('command', 'v')
-            if config.debug:
-                print(f"[DEBUG] Paste command sent")
+        if config.debug:
+            print(f"[DEBUG] Sending paste to frontmost app")
+        paste_script = '''
+        tell application "System Events"
+            keystroke "v" using command down
+        end tell
+        '''
+        result = subprocess.run(["osascript", "-e", paste_script],
+                               capture_output=True, text=True)
+        if config.debug and result.returncode != 0:
+            print(f"[DEBUG] Paste error: {result.stderr}")
 
     # Restore old clipboard
     if old_clipboard:
@@ -692,6 +530,11 @@ def transcribe_and_paste(audio: np.ndarray):
     global state
     try:
         text = transcribe(audio)
+
+        if config.debug:
+            print(f"[DEBUG] Transcription result: '{text}'")
+            print(f"[DEBUG] Is hallucination: {is_hallucination(text) if text else 'N/A (empty)'}")
+
         if text and not is_hallucination(text):
             paste_text(text)
             beep_success()
@@ -712,18 +555,6 @@ def transcribe_and_paste(audio: np.ndarray):
         time.sleep(1.5)
         set_terminal_title("Vocal-Scriber - Ready")
         show_status("● READY", "Press F9 to record")
-
-
-def get_hotkey(key_name: str):
-    """Convert key name string to pynput key."""
-    key_name = key_name.lower().strip()
-    key_map = {
-        "f1": keyboard.Key.f1, "f2": keyboard.Key.f2, "f3": keyboard.Key.f3,
-        "f4": keyboard.Key.f4, "f5": keyboard.Key.f5, "f6": keyboard.Key.f6,
-        "f7": keyboard.Key.f7, "f8": keyboard.Key.f8, "f9": keyboard.Key.f9,
-        "f10": keyboard.Key.f10, "f11": keyboard.Key.f11, "f12": keyboard.Key.f12,
-    }
-    return key_map.get(key_name, keyboard.Key.f9)
 
 
 def create_hotkey_handler(hotkey):
@@ -759,23 +590,47 @@ def main():
     print(f"System: {SYSTEM}")
 
     check_dependencies()
+
+    # Show device selector if requested
+    if config.device:
+        select_audio_device()
+
     load_whisper_model()
 
-    hotkey = get_hotkey(config.hotkey)
+    hotkey = keyboard.Key.f9
     set_terminal_title("Vocal-Scriber - Ready")
 
-    if config.minimal:
-        show_status("● READY", f"Press {config.hotkey.upper()} to record")
-    else:
-        print(f"\nReady! Press {config.hotkey.upper()} to record.")
-        print("Press Ctrl+C to exit.\n")
+    print(f"\nReady! Press F9 to record.")
+    print("Press Ctrl+C to exit.\n")
 
     handler = create_hotkey_handler(hotkey)
+
+    # Store original terminal settings to suppress keyboard echo
+    old_settings = None
+    if sys.stdin.isatty():
+        try:
+            old_settings = termios.tcgetattr(sys.stdin)
+            # Disable echo and canonical mode to prevent escape sequences from appearing
+            new_settings = termios.tcgetattr(sys.stdin)
+            new_settings[3] = new_settings[3] & ~(termios.ECHO | termios.ICANON)
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, new_settings)
+        except Exception as e:
+            if config.debug:
+                print(f"[DEBUG] Could not configure terminal: {e}")
+            old_settings = None
+
     with keyboard.Listener(on_press=handler) as listener:
         try:
             listener.join()
         except KeyboardInterrupt:
             print("\nBye!")
+        finally:
+            # Restore original terminal settings
+            if old_settings:
+                try:
+                    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+                except:
+                    pass
 
 
 if __name__ == "__main__":
