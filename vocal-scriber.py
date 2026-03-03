@@ -82,6 +82,7 @@ Examples:
   python vocal-scriber.py --api http://localhost:8002/transcribe
   python vocal-scriber.py --model small       # Use 'small' model for better accuracy
   python vocal-scriber.py --hotkey f8         # Use F8 instead of F9
+  python vocal-scriber.py --vocab "Kubernetes,Docker,React"  # Add custom vocabulary
         """
     )
     parser.add_argument(
@@ -134,6 +135,11 @@ Examples:
         "--refocus",
         action="store_true",
         help="Try to refocus the original window before pasting (disabled by default)"
+    )
+    parser.add_argument(
+        "--vocab",
+        default=None,
+        help="Additional vocabulary/technical terms to help Whisper recognize (comma-separated)"
     )
     return parser.parse_args()
 
@@ -489,6 +495,28 @@ def transcribe_api(wav_buffer: io.BytesIO) -> str:
         return resp.text.strip()
 
 
+def post_process_transcription(text: str) -> str:
+    """Fix common misrecognitions in transcription."""
+    import re
+
+    # Pattern-based replacements for Claude-related terms
+    # Use word boundaries to avoid false positives
+    replacements = [
+        (r'\bCloud Code\b', 'Claude Code'),
+        (r'\bCloud Sonnett?\b', 'Claude Sonnet'),
+        (r'\bCloud Opus\b', 'Claude Opus'),
+        (r'\bCloud Haiku\b', 'Claude Haiku'),
+        (r'\bCloud AI\b', 'Claude AI'),
+        (r'\bAnthropica?\b', 'Anthropic'),
+    ]
+
+    result = text
+    for pattern, replacement in replacements:
+        result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
+
+    return result
+
+
 def transcribe(audio: np.ndarray) -> str:
     """Transcribe audio to text."""
     if len(audio) < SAMPLE_RATE * 0.5:  # < 500ms
@@ -505,13 +533,28 @@ def transcribe(audio: np.ndarray) -> str:
     wav_buffer.seek(0)
 
     if config.api:
-        return transcribe_api(wav_buffer)
+        text = transcribe_api(wav_buffer)
     else:
-        # Use local model
+        # Use local model with initial_prompt for better recognition of technical terms
         wav_buffer.seek(0)
         audio_for_whisper = audio.astype(np.float32)
-        segments, _ = whisper_model.transcribe(audio_for_whisper, language=config.language)
-        return " ".join(seg.text for seg in segments).strip()
+
+        # Provide context to help Whisper recognize technical terms
+        initial_prompt = "Claude, Claude Code, Cloud, Anthropic, OpenAI, Docker container"
+
+        # Add custom vocabulary if provided
+        if config.vocab:
+            initial_prompt += ", " + config.vocab
+
+        segments, _ = whisper_model.transcribe(
+            audio_for_whisper,
+            language=config.language,
+            initial_prompt=initial_prompt
+        )
+        text = " ".join(seg.text.strip() for seg in segments).strip()
+
+    # Apply post-processing to fix common misrecognitions
+    return post_process_transcription(text)
 
 
 # === Paste ===
@@ -650,7 +693,7 @@ def transcribe_and_paste(audio: np.ndarray):
     try:
         text = transcribe(audio)
         if text and not is_hallucination(text):
-            paste_text(" " + text)  # Space to separate from previous
+            paste_text(text)
             beep_success()
             set_terminal_title("Vocal-Scriber ✅")
             show_status("✅ DONE", text[:50])
