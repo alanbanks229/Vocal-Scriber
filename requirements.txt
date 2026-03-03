@@ -6,6 +6,10 @@ pynput>=1.7.6
 pyperclip>=1.8.2
 requests>=2.28.0
 
+# GUI visualization dependencies
+screeninfo>=0.8.1
+pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'
+
 # Local transcription (optional - can use --api instead)
 faster-whisper>=0.10.0
 

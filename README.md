@@ -28,6 +28,11 @@ cd vocal-scriber
 pip install -r requirements.txt
 ```
 
+**Note for macOS users:** If menu bar icon doesn't appear, PyObjC may need manual installation:
+```bash
+pip install pyobjc-framework-Cocoa
+```
+
 **3. Grant permissions (macOS):**
 - **System Settings → Privacy & Security → Accessibility**
 - Add Terminal/VS Code, toggle ON
@@ -40,7 +45,7 @@ pip install -r requirements.txt
 **Terminal 1 - Start Vocal-Scriber:**
 ```bash
 cd vocal-scriber
-python vocal-scriber.py
+python vocal-scriber.py --debug
 ```
 
 *Leave this running in the background*
@@ -91,6 +96,81 @@ python vocal-scriber.py --device
 python vocal-scriber.py --threshold 0.003
 ```
 
+### Waveform Visualization
+
+Real-time waveform visualization shows your microphone input while recording, providing visual confirmation that your voice is being captured.
+
+**macOS Menu Bar Waveform (Default):**
+
+On macOS, a live waveform visualization appears in your menu bar when recording. This is the default mode - always visible across all workspaces without taking up screen space.
+
+- **30-bar waveform** updating at 30 FPS for smooth real-time visualization
+- **Adaptive**: Template image mode automatically matches light/dark mode
+- **Idle state**: Shows flat line when not recording
+- **Minimal footprint**: ~60px wide, fits naturally in the menu bar
+
+**Floating Window (Optional with --gui):**
+
+Alternatively, you can use a larger floating window overlay for more detailed visualization:
+
+- 60-bar waveform display showing audio levels in detail
+- Color-coded amplitude (green → yellow → orange → red)
+- Multi-monitor support (automatically appears on active monitor)
+- Customizable position, size, transparency, and theme
+- Works over full-screen apps without stealing focus
+
+**Basic Usage:**
+
+```bash
+# Default: menu bar waveform (macOS)
+python vocal-scriber.py
+
+# Use floating window instead (more detailed, customizable)
+python vocal-scriber.py --gui
+
+# No visualization (audio-only mode)
+python vocal-scriber.py --no-gui
+
+# Floating window with custom position
+python vocal-scriber.py --gui --gui-position top-center
+python vocal-scriber.py --gui --gui-position bottom-right
+
+# Floating window size and transparency
+python vocal-scriber.py --gui --gui-width 600 --gui-height 150 --gui-opacity 0.9
+
+# Floating window with light theme
+python vocal-scriber.py --gui --gui-theme light
+
+# Floating window on specific monitor (0, 1, 2, or 'active', 'primary')
+python vocal-scriber.py --gui --gui-monitor 1
+
+# Fine-tune floating window position with offsets
+python vocal-scriber.py --gui --gui-offset-y -100  # 100px higher
+```
+
+**Visualization Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| *(default)* | Menu bar waveform (macOS only) | **Default** |
+| `--gui` | Enable floating window instead of menu bar | Disabled |
+| `--no-gui` | Disable all visualization (audio-only) | - |
+
+**Floating Window Options (with --gui):**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--gui-position` | `bottom-center`, `top-center`, `bottom-left`, `bottom-right` | `bottom-center` |
+| `--gui-offset-x` | Horizontal offset in pixels | `0` |
+| `--gui-offset-y` | Vertical offset in pixels | `-50` |
+| `--gui-monitor` | `active`, `primary`, or index (0, 1, 2) | `active` |
+| `--gui-width` | Window width in pixels | `400` |
+| `--gui-height` | Window height in pixels | `100` |
+| `--gui-opacity` | Transparency (0.0-1.0) | `0.85` |
+| `--gui-theme` | `dark` or `light` | `dark` |
+
+**Note:** Menu bar visualization is macOS-only. On other platforms, use `--gui` for the floating window or run in audio-only mode.
+
 ### API Mode (Optional)
 
 Use a remote Whisper API instead of local transcription:
@@ -140,6 +220,11 @@ vocal-scriber/
 ├── requirements-diarization.txt   # Python dependencies (speaker diarization)
 ├── vocal-scriber.py               # Main script (push-to-talk voice → text)
 ├── diarize.py                     # Speaker diarization (file processing)
+├── gui/                           # GUI visualization module
+│   ├── __init__.py                # GUI module marker
+│   ├── gui_controller.py          # GUI lifecycle management
+│   ├── waveform_window.py         # Tkinter waveform visualization
+│   └── monitor_utils.py           # Multi-monitor detection
 └── venv/                          # Python virtual environment (created by pip)
 ```
 

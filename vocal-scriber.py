@@ -21,6 +21,7 @@ import contextlib
 import io
 import os
 import platform
+import signal
 import subprocess
 import sys
 import termios
@@ -35,6 +36,16 @@ import requests
 import sounddevice as sd
 from pynput import keyboard
 from scipy.io import wavfile
+
+# GUI imports (fail gracefully if not available)
+GUI_AVAILABLE = False
+GUIController = None
+try:
+    import tkinter as tk
+    from gui.gui_controller import GUIController
+    GUI_AVAILABLE = True
+except ImportError:
+    pass
 
 # === Configuration ===
 SAMPLE_RATE = 16000
@@ -70,6 +81,7 @@ stream: sd.InputStream | None = None
 whisper_model = None
 config = None
 selected_device = None  # Will store the selected audio input device index
+gui_controller = None  # GUIController instance for waveform visualization
 
 
 # === Argument Parsing ===
@@ -121,7 +133,74 @@ Examples:
         action="store_true",
         help="Show interactive microphone device selector"
     )
-    return parser.parse_args()
+
+    # Visualization options
+    parser.add_argument(
+        "--gui",
+        action="store_true",
+        default=False,
+        help="Enable floating window visualization (default: menu bar on macOS)"
+    )
+    parser.add_argument(
+        "--no-gui",
+        action="store_true",
+        help="Disable all visualization (audio-only mode)"
+    )
+    parser.add_argument(
+        "--gui-position",
+        default="bottom-center",
+        choices=["bottom-center", "top-center", "bottom-left", "bottom-right"],
+        help="GUI window position (default: bottom-center)"
+    )
+    parser.add_argument(
+        "--gui-offset-x",
+        type=int,
+        default=0,
+        help="Horizontal offset from gui-position in pixels (default: 0)"
+    )
+    parser.add_argument(
+        "--gui-offset-y",
+        type=int,
+        default=-50,
+        help="Vertical offset from gui-position in pixels (default: -50)"
+    )
+    parser.add_argument(
+        "--gui-monitor",
+        default="active",
+        help="Monitor for GUI: 'active', 'primary', or index (0, 1, 2, etc.) (default: active)"
+    )
+    parser.add_argument(
+        "--gui-width",
+        type=int,
+        default=400,
+        help="GUI window width in pixels (default: 400)"
+    )
+    parser.add_argument(
+        "--gui-height",
+        type=int,
+        default=100,
+        help="GUI window height in pixels (default: 100)"
+    )
+    parser.add_argument(
+        "--gui-opacity",
+        type=float,
+        default=0.85,
+        help="GUI window transparency 0.0-1.0 (default: 0.85)"
+    )
+    parser.add_argument(
+        "--gui-theme",
+        default="dark",
+        choices=["dark", "light"],
+        help="GUI color theme (default: dark)"
+    )
+
+    args = parser.parse_args()
+
+    # Handle --no-gui flag
+    if args.no_gui:
+        args.gui = False
+
+    return args
 
 
 # === Device Selection ===
@@ -209,6 +288,11 @@ def check_dependencies():
         print(f"Audio device error: {e}")
         sys.exit(1)
 
+    # Check GUI dependencies if enabled
+    if config.gui and not GUI_AVAILABLE:
+        print("Warning: tkinter not available, GUI disabled")
+        config.gui = False
+
 
 def load_whisper_model():
     """Load local Whisper model if not using API."""
@@ -280,8 +364,16 @@ def show_status(status: str, detail: str = ""):
 
 # === Recording ===
 def audio_callback(indata, frames, time_info, status):
-    """Accumulate audio chunks."""
+    """Accumulate audio chunks and send levels to GUI."""
     audio_chunks.append(indata.copy())
+
+    # Calculate RMS level for visualization (GUI window or menu bar) (fail silently)
+    try:
+        if gui_controller and gui_controller.is_recording():
+            rms = float(np.sqrt(np.mean(indata ** 2)))
+            gui_controller.audio_level_queue.put_nowait(rms)
+    except:
+        pass  # Never let visualization break audio capture
 
 
 def start_recording():
@@ -308,6 +400,14 @@ def start_recording():
     stream = sd.InputStream(**stream_params)
     stream.start()
     beep_start()
+
+    # Show visualization (GUI window or menu bar)
+    if gui_controller:
+        try:
+            gui_controller.show()
+        except:
+            pass  # Don't break recording if visualization fails
+
     set_terminal_title("🎤 RECORDING...")
     show_status("🎤 RECORDING", "Press hotkey to stop")
 
@@ -323,6 +423,14 @@ def stop_recording() -> np.ndarray:
         stream.close()
         stream = None
     beep_stop()
+
+    # Hide visualization (GUI window or menu bar)
+    if gui_controller:
+        try:
+            gui_controller.hide()
+        except:
+            pass  # Don't break recording if visualization fails
+
     set_terminal_title("⏳ Transcribing...")
     show_status("⏳ TRANSCRIBING", "Processing speech...")
 
@@ -597,10 +705,73 @@ def main():
 
     load_whisper_model()
 
+    # Initialize visualization (GUI window or menu bar icon)
+    global gui_controller
+    visualization_available = False
+
+    if config.gui and GUI_AVAILABLE:
+        # GUI mode: Create floating window
+        try:
+            gui_controller = GUIController(config)
+            gui_controller.create_window()
+            visualization_available = True
+            if config.debug:
+                print("[DEBUG] Floating window GUI initialized")
+        except Exception as e:
+            if config.debug:
+                print(f"[DEBUG] GUI window initialization failed: {e}")
+            config.gui = False
+            gui_controller = None
+    elif not config.gui and sys.platform == 'darwin':
+        # Menu bar mode (macOS default): Create menu bar icon
+        try:
+            # Check if PyObjC is available before attempting menu bar creation
+            try:
+                from Cocoa import NSStatusBar
+            except ImportError:
+                print("\n⚠️  WARNING: Menu bar icon unavailable")
+                print("PyObjC is not installed. Install with:")
+                print("  pip install pyobjc-framework-Cocoa")
+                print("\nApp will continue without menu bar visualization.\n")
+                gui_controller = None
+            else:
+                # PyObjC available, proceed with menu bar creation
+                gui_controller = GUIController(config)
+
+                # Set quit callback before creating window
+                # This will be called from the menu bar quit action
+                def quit_from_menu():
+                    """Handle quit request from menu bar."""
+                    if config.debug:
+                        print("\n[DEBUG] Quit requested from menu bar")
+                    # Signal the GUI controller to stop
+                    if gui_controller:
+                        gui_controller.stop()
+                    # Exit the program
+                    sys.exit(0)
+
+                gui_controller.quit_callback = quit_from_menu
+                gui_controller.create_window()  # Creates menu bar icon (not window)
+                visualization_available = True
+                if config.debug:
+                    print("[DEBUG] Menu bar visualization initialized (default mode)")
+        except Exception as e:
+            # Other errors during menu bar creation (not import errors)
+            if config.debug:
+                print(f"[DEBUG] Menu bar initialization failed: {e}")
+            else:
+                print(f"\n⚠️  WARNING: Could not create menu bar icon: {e}\n")
+            gui_controller = None
+
     hotkey = keyboard.Key.f9
     set_terminal_title("Vocal-Scriber - Ready")
 
     print(f"\nReady! Press F9 to record.")
+    if visualization_available:
+        if config.gui:
+            print("Floating window visualization enabled")
+        else:
+            print("Menu bar visualization enabled (use --gui for floating window)")
     print("Press Ctrl+C to exit.\n")
 
     handler = create_hotkey_handler(hotkey)
@@ -619,18 +790,91 @@ def main():
                 print(f"[DEBUG] Could not configure terminal: {e}")
             old_settings = None
 
-    with keyboard.Listener(on_press=handler) as listener:
-        try:
-            listener.join()
-        except KeyboardInterrupt:
-            print("\nBye!")
-        finally:
-            # Restore original terminal settings
-            if old_settings:
-                try:
-                    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
-                except:
-                    pass
+    # Threading model based on visualization mode:
+    # - No visualization: keyboard listener on main thread
+    # - GUI window mode: keyboard in background, tkinter mainloop on main thread
+    # - Menu bar mode (macOS): keyboard in background, Cocoa event loop on main thread
+    listener = None
+    keyboard_thread = None
+
+    try:
+        if not visualization_available:
+            # No visualization: run keyboard listener on main thread
+            with keyboard.Listener(on_press=handler) as listener:
+                listener.join()
+        elif config.gui:
+            # GUI window mode: keyboard in background, tkinter on main thread
+            def start_keyboard_listener():
+                """Run keyboard listener in background thread."""
+                nonlocal listener
+                with keyboard.Listener(on_press=handler) as listener:
+                    listener.join()
+
+            keyboard_thread = threading.Thread(target=start_keyboard_listener, daemon=True)
+            keyboard_thread.start()
+
+            # Set up Ctrl+C handler for clean shutdown
+            def signal_handler(sig, frame):
+                print("\nShutting down...")
+                if listener:
+                    listener.stop()
+                if gui_controller:
+                    gui_controller.quit()
+
+            signal.signal(signal.SIGINT, signal_handler)
+
+            # Run GUI mainloop on main thread (blocks until quit)
+            gui_controller.run_mainloop()
+        else:
+            # Menu bar mode (macOS): keyboard in background, Cocoa event loop on main thread
+            def start_keyboard_listener():
+                """Run keyboard listener in background thread."""
+                nonlocal listener
+                with keyboard.Listener(on_press=handler) as listener:
+                    listener.join()
+
+            keyboard_thread = threading.Thread(target=start_keyboard_listener, daemon=True)
+            keyboard_thread.start()
+
+            # Set up Ctrl+C handler for clean shutdown
+            running = True
+
+            def signal_handler(sig, frame):
+                nonlocal running
+                print("\nShutting down...")
+                running = False
+                if listener:
+                    listener.stop()
+                if gui_controller:
+                    gui_controller.stop()
+
+            signal.signal(signal.SIGINT, signal_handler)
+
+            # Run Cocoa event loop on main thread for NSTimer to work
+            # This keeps the menu bar icon updating and processes Cocoa events
+            if config.debug:
+                print("[DEBUG] Running Cocoa event loop for menu bar updates")
+
+            from Foundation import NSRunLoop, NSDefaultRunLoopMode, NSDate
+            runloop = NSRunLoop.currentRunLoop()
+
+            # Run event loop until interrupted
+            while running and keyboard_thread.is_alive():
+                # Process events for 0.1 seconds, then check if we should continue
+                runloop.runMode_beforeDate_(
+                    NSDefaultRunLoopMode,
+                    NSDate.dateWithTimeIntervalSinceNow_(0.1)
+                )
+
+    except KeyboardInterrupt:
+        print("\nBye!")
+    finally:
+        # Always restore terminal settings
+        if old_settings:
+            try:
+                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+            except:
+                pass
 
 
 if __name__ == "__main__":
