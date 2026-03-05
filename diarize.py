@@ -10,6 +10,13 @@ Usage:
     python diarize.py audio.wav
     python diarize.py meeting.mp3 --context "Claude, Anthropic, Docker"
     python diarize.py audio.wav --output transcript.txt
+
+Environment Variables:
+    DIARIZE_MODEL - Specify custom MLX-format speech model
+                    Default: mlx-community/VibeVoice-ASR-bf16
+                    Must be MLX format from https://huggingface.co/mlx-community
+                    Example: export DIARIZE_MODEL=mlx-community/VibeVoice-ASR-int4
+    HF_TOKEN      - Hugging Face token for faster downloads (optional)
 """
 
 import argparse
@@ -158,7 +165,15 @@ Examples:
 
 
 def load_model():
-    """Load VibeVoice-ASR model (downloads on first use)."""
+    """Load MLX-format speech model (downloads on first use).
+
+    Model can be specified via DIARIZE_MODEL environment variable.
+    Default: mlx-community/VibeVoice-ASR-bf16
+
+    IMPORTANT: Model must be in MLX format (Apple Silicon optimized).
+    Find compatible models at: https://huggingface.co/mlx-community
+    Search for "VibeVoice" or "whisper mlx" models with "ASR" in the name.
+    """
     try:
         from mlx_audio.stt.utils import load_model
     except ImportError:
@@ -171,19 +186,28 @@ def load_model():
         print("  - soundfile (audio I/O)")
         sys.exit(1)
 
-    print("Loading VibeVoice-ASR model...")
-    print("(First run will download ~9GB model - this may take several minutes)")
+    # Check for custom model via environment variable
+    model_name = os.getenv("DIARIZE_MODEL", "mlx-community/VibeVoice-ASR-bf16")
+
+    print(f"Loading model: {model_name}")
+    if model_name != "mlx-community/VibeVoice-ASR-bf16":
+        print("(Using custom model from DIARIZE_MODEL environment variable)")
+    print("(First run will download model - this may take several minutes)")
     print()
 
     try:
         # https://huggingface.co/mlx-community/VibeVoice-ASR-bf16
-        model = load_model("mlx-community/VibeVoice-ASR-bf16")
+        model = load_model(model_name)
     except Exception as e:
         print(f"\nERROR: Failed to load model: {e}")
         print("\nTroubleshooting:")
-        print("1. Check internet connection (first run downloads ~9GB)")
+        print("1. Check internet connection (first run downloads model)")
         print("2. Ensure sufficient disk space (~10GB free)")
-        print("3. Try running again (downloads may resume)")
+        print("3. Verify model name is correct (e.g., 'mlx-community/VibeVoice-ASR-bf16')")
+        print("4. Try running again (downloads may resume)")
+        if model_name != "mlx-community/VibeVoice-ASR-bf16":
+            print(f"\nCurrent DIARIZE_MODEL: {model_name}")
+            print("To use default model, unset DIARIZE_MODEL or set to: mlx-community/VibeVoice-ASR-bf16")
         sys.exit(1)
 
     print("Model loaded successfully.")

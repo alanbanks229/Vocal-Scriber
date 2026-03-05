@@ -1,8 +1,112 @@
-# macOS Menu Bar Waveform Implementation
+# macOS Menu Bar Implementation Guide: NSApplication Event Loop Required
 
 ## Overview
 
 Implemented a live mini-waveform visualization in the macOS menu bar that displays real-time audio levels during recording. The menu bar icon provides an always-visible status indicator that complements the existing floating waveform window.
+
+**Important**: This guide documents the critical requirement of using `NSApplication` for menu bar click handling. This was a subtle but important implementation detail that caused initial issues with menu interaction.
+
+## Critical Requirement: NSApplication Event Loop
+
+### Why NSApplication is Required
+
+When implementing interactive menu bar icons on macOS using `NSStatusItem`, you **must** use `NSApplication.run()` for event processing, not just `NSRunLoop`. This is a critical distinction:
+
+- **NSRunLoop**: Can process scheduled events like `NSTimer` (waveform animation worked)
+- **NSApplication**: Required to process mouse clicks on `NSStatusItem` menu bar icons (dropdown menu interactions)
+
+### The Problem
+
+Initial implementation used `NSRunLoop` to keep the application running:
+- ✅ Menu bar icon appeared correctly
+- ✅ Waveform animation worked (NSTimer events processed)
+- ❌ Clicking the icon did nothing (mouse events not processed)
+- ❌ Dropdown menu never appeared
+
+The icon was visible and animated, but completely unresponsive to user clicks.
+
+### The Solution
+
+Use `NSApplication` with proper setup for background menu bar apps:
+
+```python
+from Cocoa import NSApplication, NSApplicationActivationPolicyAccessory
+from Foundation import NSTimer
+
+# Get or create the shared application instance
+app = NSApplication.sharedApplication()
+
+# Set activation policy to "accessory" so we don't appear in Dock or Cmd+Tab
+# This makes us a pure background app with just a menu bar icon
+app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+
+# Schedule periodic check to see if we should quit
+def check_should_quit_(timer):
+    if not running or not keyboard_thread.is_alive():
+        app.stop_(None)  # Stop the run loop
+
+# Check every 0.1 seconds if we should continue running
+NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+    0.1,  # Check 10 times per second
+    menubar_waveform_instance,  # Use menu bar object as target
+    'checkShouldQuit:',  # Selector to call
+    None,
+    True  # Repeat
+)
+
+# Run NSApplication event loop (blocks until app.stop_() is called)
+app.run()
+```
+
+**Implementation reference**: `vocal-scriber.py:882-912`
+
+### Implementation Pattern for Menu Bar Apps
+
+1. **Create NSStatusItem** with menu or custom view
+2. **Set up NSApplication** as shown above
+3. **Use NSApplicationActivationPolicyAccessory** to hide from Dock
+4. **Schedule NSTimer** for periodic tasks (updates, quit checks)
+5. **Call app.run()** to start event loop (blocks on main thread)
+6. **Stop with app.stop_()** when ready to quit
+
+### Cleanup Requirements
+
+When destroying the menu bar icon, you must properly stop NSApplication:
+
+```python
+def destroy(self):
+    """Clean up status item, timer, and stop NSApplication if running."""
+    # Stop update timer
+    if self.update_timer:
+        self.update_timer.invalidate()
+        self.update_timer = None
+
+    # Stop NSApplication run loop if it's running
+    try:
+        from Cocoa import NSApplication, NSEvent, NSApplicationDefined
+        from Foundation import NSDate
+
+        app = NSApplication.sharedApplication()
+        if app.isRunning():
+            app.stop_(None)
+
+            # Post a dummy event to wake up the run loop so it processes the stop
+            event = NSEvent.otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2_(
+                NSApplicationDefined, (0, 0), 0,
+                NSDate.timeIntervalSinceReferenceDate(NSDate.date()),
+                0, None, 0, 0, 0
+            )
+            app.postEvent_atStart_(event, True)
+    except:
+        pass
+
+    # Remove status bar item
+    if self.status_item:
+        NSStatusBar.systemStatusBar().removeStatusItem_(self.status_item)
+        self.status_item = None
+```
+
+**Implementation reference**: `gui/menubar_waveform.py:376-409`
 
 ## Implementation Details
 
@@ -29,6 +133,23 @@ Implemented a live mini-waveform visualization in the macOS menu bar that displa
 - Explained synchronized visualization and performance characteristics
 
 ## Technical Architecture
+
+### Event Loop Architecture
+
+The application uses `NSApplication.run()` on the main thread to process menu bar interactions:
+
+```
+Main Thread
+    ↓
+NSApplication.run() ──→ Processes mouse clicks on menu bar icon
+    ↓                   Handles menu item selection
+NSTimer callbacks ──→ Waveform updates (10 FPS)
+    ↓                   Quit condition checks (10 Hz)
+Background Threads
+    └─→ Keyboard listener, audio recording, transcription
+```
+
+**Critical**: `NSApplication` is required for click handling. Using only `NSRunLoop` will break menu interactions.
 
 ### Audio Data Flow
 
@@ -150,11 +271,19 @@ audio_level_queue (shared Queue)
 
 ## Future Enhancements
 
-### Optional Improvements (Not Implemented)
+### Implemented Features
 
-1. **Click Interactions**
-   - Click icon to show/hide floating window
-   - Right-click for menu (Quit, Settings, etc.)
+1. **Click Interactions** ✅
+   - Click icon shows dropdown menu with microphone selection
+   - Menu items dynamically list available input devices
+   - Current device is marked with checkmark
+
+### Optional Improvements (Not Yet Implemented)
+
+1. **Additional Menu Items**
+   - Show/hide floating window toggle
+   - Quick access to settings
+   - Quit option in menu
 
 2. **Configuration Options**
    - Command-line flag: `--no-menubar` to disable
@@ -163,11 +292,6 @@ audio_level_queue (shared Queue)
 3. **Enhanced States**
    - Different visualization for transcribing state
    - Fade animation when transitioning idle ↔ recording
-
-4. **Menu Support**
-   - Dropdown menu with app controls
-   - Quick access to settings
-   - Show/hide window toggle
 
 These features were deliberately left out to keep the implementation simple and focused. The current implementation provides core functionality with minimal complexity.
 
@@ -186,8 +310,79 @@ These features were deliberately left out to keep the implementation simple and 
 - Tested with both light and dark mode
 - Tested CPU/performance impact
 
+## Troubleshooting
+
+### Common Issues and Solutions
+
+#### Menu Bar Icon Appears But Doesn't Respond to Clicks
+
+**Symptom**: The icon shows up in the menu bar and may even animate, but clicking it does nothing. No dropdown menu appears.
+
+**Root Cause**: Using `NSRunLoop` instead of `NSApplication` for event processing.
+
+**Solution**:
+1. Replace `NSRunLoop.currentRunLoop().run()` with `NSApplication.sharedApplication().run()`
+2. Set activation policy: `app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)`
+3. Ensure you're running on the main thread
+4. See the "Critical Requirement" section above for complete implementation
+
+**Why This Happens**: `NSRunLoop` processes timer events but not mouse events on `NSStatusItem`. Only `NSApplication` provides the full event handling infrastructure needed for menu bar interactions.
+
+#### App Won't Quit / Hangs on Exit
+
+**Symptom**: Application hangs when trying to quit or doesn't respond to Ctrl+C.
+
+**Root Cause**: `NSApplication.run()` blocks until explicitly stopped, and the app may not be properly stopping the run loop.
+
+**Solution**:
+1. Use `NSTimer` to periodically check if you should quit
+2. Call `app.stop_(None)` when ready to exit
+3. Post a dummy event to wake the run loop: see cleanup code in "Critical Requirement" section
+4. Ensure signal handlers properly set the quit flag
+
+#### Icon Appears in Dock When It Shouldn't
+
+**Symptom**: Menu bar app shows up in Dock and Cmd+Tab switcher.
+
+**Root Cause**: Using wrong activation policy or not setting one at all.
+
+**Solution**: Set activation policy before calling `app.run()`:
+```python
+app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+```
+
+This makes the app a pure menu bar utility without Dock presence.
+
+#### Menu Updates Not Showing
+
+**Symptom**: Menu items are created but changes (like selected microphone) don't appear.
+
+**Root Cause**: Not calling `setState_()` on menu items or not refreshing the menu.
+
+**Solution**: When updating menu item state:
+```python
+menu_item.setState_(1)  # Checked
+menu_item.setState_(0)  # Unchecked
+```
+
+The menu will automatically refresh when clicked if using `NSApplication` event loop.
+
+#### Timer Callbacks Not Firing
+
+**Symptom**: Waveform doesn't update or quit checks don't run.
+
+**Root Cause**: Timer not properly scheduled or target/selector incorrect.
+
+**Solution**:
+1. Use `NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_()`
+2. Ensure selector name follows Objective-C conventions (trailing underscore for one argument)
+3. Target object must be retained (not garbage collected)
+4. Timer is automatically added to the run loop when "scheduled"
+
 ## Conclusion
 
 Successfully implemented a lightweight, native macOS menu bar waveform visualization that enhances the user experience without compromising performance. The implementation follows macOS design guidelines, integrates seamlessly with existing code, and provides meaningful visual feedback during recording sessions.
 
 **Key Achievement**: Always-visible recording status indicator that works across all workspaces and full-screen apps, complementing the existing floating window visualization.
+
+**Critical Learning**: Menu bar implementations on macOS require `NSApplication.run()` for click handling, not just `NSRunLoop`. This subtle distinction is essential for interactive menu bar icons and is now well-documented to help future developers avoid this common pitfall.

@@ -263,6 +263,29 @@ def select_audio_device():
             sys.exit(0)
 
 
+def switch_audio_device(device_index):
+    """Switch to a different audio device during runtime."""
+    global selected_device, stream
+
+    # Stop current stream if recording
+    if stream:
+        if config.debug:
+            print(f"[DEBUG] Stopping stream to switch device")
+        stream.stop()
+        stream.close()
+        stream = None
+
+    # Update selected device
+    selected_device = device_index
+
+    if config.debug:
+        device_info = sd.query_devices(device_index)
+        print(f"[DEBUG] Switched to device {device_index}: {device_info['name']}")
+
+    # If we were recording, restart with new device
+    # (this is handled automatically on next F9 press)
+
+
 # === Dependency Checks ===
 def check_dependencies():
     """Verify system dependencies based on OS."""
@@ -699,9 +722,8 @@ def main():
 
     check_dependencies()
 
-    # Show device selector if requested
-    if config.device:
-        select_audio_device()
+    # Always show microphone selector at startup
+    select_audio_device()
 
     load_whisper_model()
 
@@ -752,6 +774,13 @@ def main():
 
                 gui_controller.quit_callback = quit_from_menu
                 gui_controller.create_window()  # Creates menu bar icon (not window)
+
+                # Set initial device selection in menu bar
+                if gui_controller.menubar_waveform:
+                    gui_controller.menubar_waveform.set_current_device(selected_device if selected_device is not None else sd.default.device[0])
+                    gui_controller.menubar_waveform.device_change_callback = switch_audio_device
+                    gui_controller.menubar_waveform.quit_callback = quit_from_menu
+
                 visualization_available = True
                 if config.debug:
                     print("[DEBUG] Menu bar visualization initialized (default mode)")
@@ -842,29 +871,51 @@ def main():
             def signal_handler(sig, frame):
                 nonlocal running
                 print("\nShutting down...")
-                running = False
-                if listener:
-                    listener.stop()
-                if gui_controller:
-                    gui_controller.stop()
+                # Invoke the same quit callback used by the menu bar quit button
+                if gui_controller and gui_controller.menubar_waveform and gui_controller.menubar_waveform.quit_callback:
+                    gui_controller.menubar_waveform.quit_callback()
+                else:
+                    # Fallback if menu bar not available
+                    running = False
+                    if listener:
+                        listener.stop()
+                    if gui_controller:
+                        gui_controller.stop()
+                    sys.exit(0)
 
             signal.signal(signal.SIGINT, signal_handler)
 
-            # Run Cocoa event loop on main thread for NSTimer to work
-            # This keeps the menu bar icon updating and processes Cocoa events
+            # Run NSApplication event loop on main thread for menu bar interactions
+            # NSApplication is required for NSStatusItem click handling, not just NSRunLoop
             if config.debug:
-                print("[DEBUG] Running Cocoa event loop for menu bar updates")
+                print("[DEBUG] Running NSApplication event loop for menu bar")
 
-            from Foundation import NSRunLoop, NSDefaultRunLoopMode, NSDate
-            runloop = NSRunLoop.currentRunLoop()
+            from Cocoa import NSApplication, NSApplicationActivationPolicyAccessory
+            from Foundation import NSTimer
 
-            # Run event loop until interrupted
-            while running and keyboard_thread.is_alive():
-                # Process events for 0.1 seconds, then check if we should continue
-                runloop.runMode_beforeDate_(
-                    NSDefaultRunLoopMode,
-                    NSDate.dateWithTimeIntervalSinceNow_(0.1)
-                )
+            # Get or create the shared application instance
+            app = NSApplication.sharedApplication()
+
+            # Set activation policy to "accessory" so we don't appear in Dock or Cmd+Tab
+            # This makes us a pure background app with just a menu bar icon
+            app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+
+            # Schedule periodic check to see if we should quit
+            def check_should_quit_(timer):
+                if not running or not keyboard_thread.is_alive():
+                    app.stop_(None)  # Stop the run loop
+
+            # Check every 0.1 seconds if we should continue running
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                0.1,  # Check 10 times per second
+                gui_controller.menubar_waveform,  # Use menu bar object as target
+                'checkShouldQuit:',  # Selector to call
+                None,
+                True  # Repeat
+            )
+
+            # Run NSApplication event loop (blocks until app.stop_() is called)
+            app.run()
 
     except KeyboardInterrupt:
         print("\nBye!")

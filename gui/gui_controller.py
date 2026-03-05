@@ -54,7 +54,8 @@ class GUIController:
                 # Menu bar only mode (macOS only)
                 try:
                     from gui.menubar_waveform import MenuBarWaveform
-                    self.menubar_waveform = MenuBarWaveform(
+                    # PyObjC NSObject subclasses require alloc/init pattern
+                    self.menubar_waveform = MenuBarWaveform.alloc().initWithConfig_audioLevelQueue_(
                         self.config,
                         self.audio_level_queue
                     )

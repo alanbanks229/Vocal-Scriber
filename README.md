@@ -40,6 +40,16 @@ pip install pyobjc-framework-Cocoa
 
 **First run downloads Whisper model** (~500MB for `small` model, one-time download).
 
+### Kill the process (if needed)
+                                                                                                                                                                                                                            
+**Find the PID:**
+`ps aux | grep "vocal-scriber.py" | grep -v grep`
+
+> This shows the process with its PID (second column).
+
+**One-liner to find and kill it:**
+`pkill -9 -f "vocal-scriber.py"`
+
 ### Usage
 
 **Terminal 1 - Start Vocal-Scriber:**
@@ -389,6 +399,35 @@ This enables faster model downloads on first run. Without it, downloads still wo
 **First run downloads ~9GB model** (one-time, stored in HuggingFace cache at `~/.cache/huggingface/`).
 
 **Note:** WAV files work without ffmpeg, but M4A/MP3/FLAC require it for audio decoding.
+
+**Advanced: Custom Model Selection**
+
+By default, `diarize.py` uses `mlx-community/VibeVoice-ASR-bf16` (~9GB). You can specify a different model using the `DIARIZE_MODEL` environment variable:
+
+```bash
+# Use a smaller quantized model
+export DIARIZE_MODEL=mlx-community/VibeVoice-ASR-int4
+python diarize.py audio.wav
+
+# Or add to your .env file:
+echo "DIARIZE_MODEL=mlx-community/VibeVoice-ASR-int4" >> .env
+```
+
+**Finding Compatible Models:**
+
+Models **must** be in **MLX format** (Apple Silicon optimized) and compatible with the `mlx-audio` library:
+
+1. Browse: [https://huggingface.co/mlx-community](https://huggingface.co/mlx-community)
+2. Search for: **"VibeVoice"** or **"whisper mlx"**
+3. Look for models with **"ASR"** (Automatic Speech Recognition) in the name
+4. Model must be **MLX format**, not PyTorch/ONNX
+
+**Known Compatible Models:**
+- `mlx-community/VibeVoice-ASR-bf16` (default, ~9GB, bfloat16, best quality)
+- `mlx-community/VibeVoice-ASR-int8` (~5GB, 8-bit quantized, balanced)
+- `mlx-community/VibeVoice-ASR-int4` (~3GB, 4-bit quantized, fastest/smallest)
+
+**Note:** Regular OpenAI Whisper models won't work directly - they must be converted to MLX format first. Stick to models from the `mlx-community` organization on Hugging Face.
 
 ### Usage
 
