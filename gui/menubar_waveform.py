@@ -180,7 +180,20 @@ class MenuBarWaveform(NSObject):
             return None
 
     def start_recording(self):
-        """Start updating icon during recording."""
+        """Start updating icon during recording (thread-safe)."""
+        # Dispatch to main thread if called from background thread
+        from Foundation import NSThread
+        if NSThread.isMainThread():
+            self.startRecordingOnMainThread_(None)
+        else:
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                'startRecordingOnMainThread:',
+                None,
+                False
+            )
+
+    def startRecordingOnMainThread_(self, arg):
+        """Internal: Start recording (must be called on main thread)."""
         if self.is_recording:
             return
 
@@ -191,7 +204,20 @@ class MenuBarWaveform(NSObject):
             print("[DEBUG] Menu bar waveform updates started")
 
     def stop_recording(self):
-        """Stop updating icon and reset to flat line."""
+        """Stop updating icon and reset to flat line (thread-safe)."""
+        # Dispatch to main thread if called from background thread
+        from Foundation import NSThread
+        if NSThread.isMainThread():
+            self.stopRecordingOnMainThread_(None)
+        else:
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                'stopRecordingOnMainThread:',
+                None,
+                False
+            )
+
+    def stopRecordingOnMainThread_(self, arg):
+        """Internal: Stop recording (must be called on main thread)."""
         if not self.is_recording:
             return
 

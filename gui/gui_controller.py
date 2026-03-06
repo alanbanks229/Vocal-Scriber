@@ -105,6 +105,7 @@ class GUIController:
         # Start menu bar waveform updates (if menu bar mode)
         if self.menubar_waveform:
             try:
+                # Thread-safe: start_recording dispatches to main thread if needed
                 self.menubar_waveform.start_recording()
             except Exception as e:
                 if self.config.debug:
@@ -126,6 +127,7 @@ class GUIController:
         # Stop menu bar waveform updates (if menu bar mode, resets to flat line)
         if self.menubar_waveform:
             try:
+                # Thread-safe: stop_recording dispatches to main thread if needed
                 self.menubar_waveform.stop_recording()
             except Exception as e:
                 if self.config.debug:
