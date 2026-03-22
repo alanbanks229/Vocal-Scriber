@@ -132,7 +132,7 @@ class WaveformWindow:
 
     def _position_window(self):
         """Position window based on configuration."""
-        from gui.monitor_utils import get_monitor_geometry
+        from .monitor_utils import get_monitor_geometry
 
         # Get target monitor geometry
         monitor = get_monitor_geometry(self.config.gui_monitor)

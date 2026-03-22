@@ -1,8 +1,8 @@
 # Speaker Diarization Dependencies (Apple Silicon only)
-# Install with: pip install -r requirements-diarization.txt
+# Install with: pip install -r tools/diarization/requirements.txt
 #
-# NOTE: These dependencies are ONLY for diarize.py
-# The main vocal-scriber.py does NOT require these.
+# NOTE: These dependencies are ONLY for tools/diarization/diarize.py
+# The main vocal_scriber package does NOT require these.
 #
 # SYSTEM REQUIREMENT (not a Python package):
 # - ffmpeg: Required for M4A/MP3/FLAC audio decoding

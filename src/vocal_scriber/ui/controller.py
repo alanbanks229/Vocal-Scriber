@@ -2,7 +2,7 @@
 import sys
 import threading
 import queue
-from gui.waveform_window import WaveformWindow
+from .waveform_window import WaveformWindow
 
 
 class GUIController:
@@ -53,7 +53,7 @@ class GUIController:
             elif sys.platform == 'darwin':
                 # Menu bar only mode (macOS only)
                 try:
-                    from gui.menubar_waveform import MenuBarWaveform
+                    from .menubar_waveform import MenuBarWaveform
                     # PyObjC NSObject subclasses require alloc/init pattern
                     self.menubar_waveform = MenuBarWaveform.alloc().initWithConfig_audioLevelQueue_(
                         self.config,

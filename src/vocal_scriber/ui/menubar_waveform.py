@@ -278,7 +278,7 @@ class MenuBarWaveform(NSObject):
         Called periodically by NSTimer to check if the keyboard thread has died
         or the app has been signaled to quit. If so, stops the NSApplication run loop.
         """
-        # This will be checked by vocal-scriber.py - if the keyboard thread dies
+        # This is checked by the macOS runtime - if the keyboard thread dies
         # or the running flag is set to False, the app will call stop() on us,
         # which will then call NSApplication.sharedApplication().stop_()
         pass
