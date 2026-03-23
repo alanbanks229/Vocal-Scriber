@@ -61,3 +61,13 @@ If PyTorch cannot see the GPU, Vocal-Scriber intentionally continues on CPU rath
 ## Important Note
 
 Do not try to "fix" the Windows runtime by dropping random CUDA DLLs into the repo. The supported path here is the PyTorch CUDA 13 runtime installed through the Windows setup script.
+
+## Packaged Windows App
+
+For the packaged Windows tray app:
+
+- Python is bundled with the application
+- the end user does not need to run the setup script
+- the end user does not need to install the CUDA Toolkit
+
+The packaged app still relies on a working NVIDIA driver for GPU acceleration. If PyTorch cannot use the GPU at runtime, Vocal-Scriber falls back to CPU automatically.

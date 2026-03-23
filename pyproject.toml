@@ -27,6 +27,11 @@ macos = [
 windows = [
     "openai-whisper>=20231117",
     "pyautogui>=0.9.53",
+    "pystray>=0.19.5",
+    "pillow>=10.0.0",
+]
+windows-build = [
+    "pyinstaller>=6.0",
 ]
 
 [tool.setuptools]

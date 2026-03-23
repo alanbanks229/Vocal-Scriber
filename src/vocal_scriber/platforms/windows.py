@@ -3,11 +3,15 @@
 
 from __future__ import annotations
 
+import os
 import signal
 import sys
 import threading
 import time
 import traceback
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Callable
 
 import numpy as np
 import requests
@@ -37,6 +41,7 @@ from ..common import (
     show_status,
     suppress_stdout,
     transcribe_api,
+    _windows_devices_share_identity,
 )
 
 SYSTEM = "Windows"
@@ -55,6 +60,15 @@ class State:
     TRANSCRIBING = 2
 
 
+@dataclass
+class RuntimeCallbacks:
+    """Optional callbacks for non-console Windows app integrations."""
+
+    on_status: Callable[[str, str], None] | None = None
+    on_debug: Callable[[str], None] | None = None
+    on_error: Callable[[str], None] | None = None
+
+
 state = State.IDLE
 state_lock = threading.Lock()
 audio_chunks: list[np.ndarray] = []
@@ -65,6 +79,65 @@ config = None
 selected_device = None
 gui_controller = None
 recording_sample_rate = SAMPLE_RATE
+listener: keyboard.Listener | None = None
+runtime_callbacks = RuntimeCallbacks()
+console_output_enabled = True
+runtime_started = False
+runtime_prepared = False
+
+
+@contextmanager
+def whisper_progress_context(whisper_module=None):
+    """Disable tqdm-based Whisper progress output when no console is available."""
+    if console_output_enabled:
+        yield
+        return
+
+    import tqdm as tqdm_module
+
+    original_global_tqdm = tqdm_module.tqdm
+    original_whisper_tqdm = getattr(whisper_module, "tqdm", None) if whisper_module else None
+
+    with open(os.devnull, "w", encoding="utf-8") as null_stream:
+        def silent_tqdm(*args, **kwargs):
+            kwargs.setdefault("disable", True)
+            kwargs.setdefault("file", null_stream)
+            return original_global_tqdm(*args, **kwargs)
+
+        tqdm_module.tqdm = silent_tqdm
+        if whisper_module is not None and original_whisper_tqdm is not None:
+            whisper_module.tqdm = silent_tqdm
+        try:
+            yield
+        finally:
+            tqdm_module.tqdm = original_global_tqdm
+            if whisper_module is not None and original_whisper_tqdm is not None:
+                whisper_module.tqdm = original_whisper_tqdm
+
+
+def _print(message: str) -> None:
+    if console_output_enabled:
+        print(message)
+
+
+def _emit_debug(message: str) -> None:
+    debug_enabled = bool(config and getattr(config, "debug", False))
+    if debug_enabled and console_output_enabled:
+        print(message)
+    if debug_enabled and runtime_callbacks.on_debug:
+        runtime_callbacks.on_debug(message)
+
+
+def _emit_status(status: str, detail: str = "") -> None:
+    if console_output_enabled:
+        show_status(status, detail)
+    if runtime_callbacks.on_status:
+        runtime_callbacks.on_status(status, detail)
+
+
+def _emit_error(detail: str) -> None:
+    if runtime_callbacks.on_error:
+        runtime_callbacks.on_error(detail)
 
 
 def switch_audio_device(device_index: int) -> None:
@@ -72,32 +145,27 @@ def switch_audio_device(device_index: int) -> None:
     global selected_device, stream
 
     if stream:
-        if config.debug:
-            print("[DEBUG] Stopping stream to switch device")
+        _emit_debug("[DEBUG] Stopping stream to switch device")
         stream.stop()
         stream.close()
         stream = None
 
     selected_device = device_index
-    if config.debug:
+    if config and getattr(config, "debug", False):
         device_info = sd.query_devices(device_index)
-        print(f"[DEBUG] Switched to device {device_index}: {device_info['name']}")
+        _emit_debug(f"[DEBUG] Switched to device {device_index}: {device_info['name']}")
 
 
 def iter_input_device_fallbacks(device_index: int, device_info: dict):
     """Yield fallback devices for the same hardware ordered by host API stability."""
     yield device_index, device_info
 
-    normalized_name = device_info["name"].lower()
-    normalized_prefix = normalized_name.split("(")[0].strip()
-    exact_matches = []
-    prefix_matches = []
+    matches = []
 
     for index, candidate in enumerate(sd.query_devices()):
         if index == device_index or candidate["max_input_channels"] <= 0:
             continue
 
-        candidate_name = candidate["name"].lower()
         candidate_hostapi = sd.query_hostapis(candidate["hostapi"])["name"]
         candidate_entry = (
             WINDOWS_HOSTAPI_PRIORITY.get(candidate_hostapi, 99),
@@ -105,12 +173,9 @@ def iter_input_device_fallbacks(device_index: int, device_info: dict):
             candidate,
         )
 
-        if candidate_name == normalized_name:
-            exact_matches.append(candidate_entry)
-        elif normalized_prefix and len(normalized_prefix) >= 8 and candidate_name.startswith(normalized_prefix):
-            prefix_matches.append(candidate_entry)
+        if _windows_devices_share_identity(device_info, candidate):
+            matches.append(candidate_entry)
 
-    matches = exact_matches if exact_matches else prefix_matches
     for _, index, candidate in sorted(matches, key=lambda item: (item[0], item[1])):
         yield index, candidate
 
@@ -127,15 +192,14 @@ def open_input_stream_with_fallback():
         stream_sample_rate = get_supported_input_sample_rate(
             device_index,
             device_info,
-            debug=config.debug,
+            debug=bool(config and getattr(config, "debug", False)),
         )
         hostapi_name = sd.query_hostapis(device_info["hostapi"])["name"]
-        if config.debug:
-            default_suffix = " (system default)" if selected_device is None and device_index == selected_index else ""
-            print(
-                f"[DEBUG] Recording from: {device_info['name']} @ {stream_sample_rate} Hz "
-                f"via {hostapi_name}{default_suffix}"
-            )
+        default_suffix = " (system default)" if selected_device is None and device_index == selected_index else ""
+        _emit_debug(
+            f"[DEBUG] Recording from: {device_info['name']} @ {stream_sample_rate} Hz "
+            f"via {hostapi_name}{default_suffix}"
+        )
 
         try:
             input_stream = sd.InputStream(
@@ -147,14 +211,13 @@ def open_input_stream_with_fallback():
             )
             input_stream.start()
 
-            if config.debug and attempt_index > 1:
-                print(f"[DEBUG] Fallback input backend succeeded on device {device_index}")
+            if attempt_index > 1:
+                _emit_debug(f"[DEBUG] Fallback input backend succeeded on device {device_index}")
 
             return input_stream, stream_sample_rate
         except Exception as exc:
             last_error = exc
-            if config.debug:
-                print(f"[DEBUG] Failed to start input stream on device {device_index} via {hostapi_name}: {exc}")
+            _emit_debug(f"[DEBUG] Failed to start input stream on device {device_index} via {hostapi_name}: {exc}")
 
     if last_error is not None:
         raise last_error
@@ -165,7 +228,7 @@ def check_dependencies() -> None:
     """Verify runtime prerequisites."""
     ensure_microphone_available()
     if config.gui and not GUI_AVAILABLE:
-        print("Warning: tkinter not available, GUI disabled")
+        _print("Warning: tkinter not available, GUI disabled")
         config.gui = False
 
 
@@ -178,17 +241,17 @@ def load_whisper_model() -> None:
             health_url = config.api.rsplit("/", 1)[0] + "/health"
             response = requests.get(health_url, timeout=2)
             info = response.json()
-            print(f"Using Whisper API: model={info.get('default_model', 'unknown')}")
+            _print(f"Using Whisper API: model={info.get('default_model', 'unknown')}")
         except Exception:
-            print(f"Using Whisper API: {config.api}")
+            _print(f"Using Whisper API: {config.api}")
         return
 
     try:
         import torch
         import whisper
     except ImportError:
-        print("Windows local transcription requires torch and openai-whisper.")
-        print("Run the Windows setup script to install the CUDA 13-ready backend.")
+        _print("Windows local transcription requires torch and openai-whisper.")
+        _print("Run the Windows setup script to install the CUDA 13-ready backend.")
         raise SystemExit(1) from None
 
     def warm_up_model(model, device_name: str) -> None:
@@ -200,19 +263,19 @@ def load_whisper_model() -> None:
                 test_audio,
                 language=LANGUAGE,
                 fp16=device_name == "cuda",
-                verbose=False,
+                verbose=None,
                 condition_on_previous_text=False,
             )
 
-    print(f"Loading Whisper model '{config.model}'... (first run downloads ~150MB)")
+    download_root = getattr(config, "model_download_root", None)
+    _print(f"Loading Whisper model '{config.model}'... (first run downloads ~150MB)")
 
     runtime_candidates = []
     try:
         if torch.cuda.is_available():
             runtime_candidates.append("cuda")
     except Exception as exc:
-        if config.debug:
-            print(f"[DEBUG] Could not query CUDA devices: {exc}")
+        _emit_debug(f"[DEBUG] Could not query CUDA devices: {exc}")
 
     runtime_candidates.append("cpu")
     last_error = None
@@ -220,9 +283,14 @@ def load_whisper_model() -> None:
     for device_name in runtime_candidates:
         try:
             if device_name == "cuda":
-                print("Trying GPU acceleration for Whisper...")
+                _print("Trying GPU acceleration for Whisper...")
 
-            candidate_model = whisper.load_model(config.model, device=device_name)
+            with whisper_progress_context(whisper):
+                candidate_model = whisper.load_model(
+                    config.model,
+                    device=device_name,
+                    download_root=download_root,
+                )
 
             if device_name == "cuda":
                 warm_up_model(candidate_model, device_name)
@@ -230,14 +298,13 @@ def load_whisper_model() -> None:
             whisper_model = candidate_model
             whisper_device = device_name
             runtime_label = "GPU" if device_name == "cuda" else "CPU"
-            print(f"Model loaded on {runtime_label}.")
+            _print(f"Model loaded on {runtime_label}.")
             return
         except Exception as exc:
             last_error = exc
-            if config.debug:
-                print(f"[DEBUG] Whisper init failed on {device_name}: {exc}")
-            elif device_name == "cuda":
-                print("GPU unavailable for Whisper; falling back to CPU.")
+            _emit_debug(f"[DEBUG] Whisper init failed on {device_name}: {exc}")
+            if device_name == "cuda" and console_output_enabled:
+                _print("GPU unavailable for Whisper; falling back to CPU.")
 
     raise last_error if last_error is not None else RuntimeError("Unable to initialize Whisper model")
 
@@ -285,7 +352,7 @@ def start_recording() -> None:
             pass
 
     set_terminal_title("Vocal-Scriber - Recording")
-    show_status("[RECORDING]", "Press hotkey to stop")
+    _emit_status("[RECORDING]", "Press hotkey to stop")
 
 
 def stop_recording() -> np.ndarray:
@@ -307,7 +374,7 @@ def stop_recording() -> np.ndarray:
             pass
 
     set_terminal_title("Vocal-Scriber - Transcribing")
-    show_status("[TRANSCRIBING]", "Processing speech...")
+    _emit_status("[TRANSCRIBING]", "Processing speech...")
 
     if not audio_chunks:
         return np.array([], dtype=np.float32)
@@ -319,14 +386,13 @@ def transcribe(audio: np.ndarray) -> str:
     global whisper_model, whisper_device
 
     if recording_sample_rate != SAMPLE_RATE:
-        if config.debug:
-            print(f"[DEBUG] Resampling audio from {recording_sample_rate} Hz to {SAMPLE_RATE} Hz")
+        _emit_debug(f"[DEBUG] Resampling audio from {recording_sample_rate} Hz to {SAMPLE_RATE} Hz")
         audio = resample_audio(audio, recording_sample_rate, SAMPLE_RATE)
 
     if len(audio) < SAMPLE_RATE * 0.5:
         return ""
 
-    if not has_speech(audio, config.threshold, debug=config.debug):
+    if not has_speech(audio, config.threshold, debug=bool(getattr(config, "debug", False))):
         return ""
 
     if config.api:
@@ -342,12 +408,12 @@ def transcribe(audio: np.ndarray) -> str:
             language=LANGUAGE,
             fp16=whisper_device == "cuda",
             initial_prompt=initial_prompt,
-            verbose=False,
+            verbose=None,
             condition_on_previous_text=False,
         )
 
     try:
-        with suppress_stdout():
+        with suppress_stdout(), whisper_progress_context():
             result = do_transcribe()
     except Exception as exc:
         error_message = str(exc).lower()
@@ -366,9 +432,8 @@ def transcribe(audio: np.ndarray) -> str:
         if not should_fallback_to_cpu:
             raise
 
-        if config.debug:
-            print(f"[DEBUG] Whisper GPU runtime failed during transcription: {exc}")
-        print("Whisper GPU runtime unavailable; retrying on CPU.")
+        _emit_debug(f"[DEBUG] Whisper GPU runtime failed during transcription: {exc}")
+        _print("Whisper GPU runtime unavailable; retrying on CPU.")
 
         import torch
         import whisper
@@ -378,10 +443,15 @@ def transcribe(audio: np.ndarray) -> str:
         except Exception:
             pass
 
-        whisper_model = whisper.load_model(config.model, device="cpu")
+        with whisper_progress_context(whisper):
+            whisper_model = whisper.load_model(
+                config.model,
+                device="cpu",
+                download_root=getattr(config, "model_download_root", None),
+            )
         whisper_device = "cpu"
 
-        with suppress_stdout():
+        with suppress_stdout(), whisper_progress_context():
             result = do_transcribe()
 
     text = result.get("text", "").strip()
@@ -393,30 +463,34 @@ def transcribe_and_paste(audio: np.ndarray) -> None:
     global state
 
     try:
+        _emit_debug("[DEBUG] Starting transcription worker")
+        _emit_status("[TRANSCRIBING]", "Running Whisper inference...")
         text = transcribe(audio)
-        if config.debug:
-            print(f"[DEBUG] Transcription result: '{text}'")
-            print(f"[DEBUG] Is hallucination: {is_hallucination(text) if text else 'N/A (empty)'}")
+        _emit_debug(f"[DEBUG] Transcription result: '{text}'")
+        _emit_debug(f"[DEBUG] Is hallucination: {is_hallucination(text) if text else 'N/A (empty)'}")
 
         if text and not is_hallucination(text):
-            paste_text(text, SYSTEM, debug=config.debug)
+            _emit_debug("[DEBUG] Transcription complete; pasting text")
+            _emit_status("[PASTING]", "Sending text to the active app...")
+            paste_text(text, SYSTEM, debug=bool(getattr(config, "debug", False)))
             beep_success()
             set_terminal_title("Vocal-Scriber - Done")
-            show_status("[DONE]", text[:60])
+            _emit_status("[DONE]", text[:60])
         else:
             beep_error()
             set_terminal_title("Vocal-Scriber - Ready")
-            show_status("[NO SPEECH]", "Nothing detected")
+            _emit_status("[NO SPEECH]", "Nothing detected")
     except Exception as exc:
         beep_error()
         set_terminal_title("Vocal-Scriber - Error")
-        show_status("[ERROR]", str(exc)[:60])
+        _emit_status("[ERROR]", str(exc)[:60])
+        _emit_error(str(exc))
     finally:
         with state_lock:
             state = State.IDLE
         time.sleep(1.5)
         set_terminal_title("Vocal-Scriber - Ready")
-        show_status("[READY]", "Press F9 to record")
+        _emit_status("[READY]", "Press F9 to record")
 
 
 def create_hotkey_handler(hotkey):
@@ -444,28 +518,43 @@ def create_hotkey_handler(hotkey):
         except Exception as exc:
             with state_lock:
                 state = State.IDLE
-            if config.debug:
+            if console_output_enabled and getattr(config, "debug", False):
                 traceback.print_exc()
             beep_error()
             set_terminal_title("Vocal-Scriber - Error")
-            show_status("[ERROR]", str(exc)[:60])
+            _emit_status("[ERROR]", str(exc)[:60])
+            _emit_error(str(exc))
 
     return on_press
 
 
-def main() -> None:
-    """Run the Windows runtime."""
+def prepare_runtime(
+    runtime_config,
+    device_index: int | None,
+    callbacks: RuntimeCallbacks | None = None,
+    console_output: bool = True,
+):
+    """Prepare the Windows runtime without arming the hotkey listener."""
     global config, gui_controller, selected_device
+    global runtime_callbacks, console_output_enabled, runtime_prepared
 
-    config = parse_args()
+    config = runtime_config
+    selected_device = device_index
+    runtime_callbacks = callbacks or RuntimeCallbacks()
+    console_output_enabled = console_output
 
-    print("Vocal-Scriber - Voice Typing for Your Terminal")
-    print("=" * 45)
-    print(f"System: {SYSTEM}")
-    print(f"Default local backend: PyTorch Whisper ({DEFAULT_MODEL})")
+    if runtime_prepared:
+        return bool(gui_controller)
 
     check_dependencies()
-    selected_device = select_audio_device()
+
+    if selected_device is None:
+        if console_output_enabled:
+            selected_device = select_audio_device()
+        else:
+            raise RuntimeError("No microphone selected for Windows app mode.")
+
+    _emit_status("[STARTING]", "Loading Whisper model...")
     load_whisper_model()
 
     visualization_available = False
@@ -474,69 +563,136 @@ def main() -> None:
             gui_controller = GUIController(config)
             gui_controller.create_window()
             visualization_available = True
-            if config.debug:
-                print("[DEBUG] Floating window GUI initialized")
+            _emit_debug("[DEBUG] Floating window GUI initialized")
         except Exception as exc:
-            if config.debug:
-                print(f"[DEBUG] GUI window initialization failed: {exc}")
+            _emit_debug(f"[DEBUG] GUI window initialization failed: {exc}")
             config.gui = False
             gui_controller = None
+
+    runtime_prepared = True
+    return visualization_available
+
+
+def start_hotkey_listener() -> None:
+    """Arm the Windows hotkey listener after runtime preparation completes."""
+    global listener, runtime_started
+
+    if runtime_started:
+        return
+    if not runtime_prepared:
+        raise RuntimeError("Runtime must be prepared before starting the hotkey listener.")
 
     hotkey = keyboard.Key.f9
     set_terminal_title("Vocal-Scriber - Ready")
 
-    print("\nReady! Press F9 to record.")
-    if visualization_available:
-        print("Floating window visualization enabled")
-    print("Press Ctrl+C to exit.\n")
+    listener = keyboard.Listener(on_press=create_hotkey_handler(hotkey))
+    listener.start()
+    runtime_started = True
 
-    handler = create_hotkey_handler(hotkey)
-    listener = None
+    _emit_status("[READY]", "Press F9 to record")
+
+
+def initialize_runtime(
+    runtime_config,
+    device_index: int | None,
+    callbacks: RuntimeCallbacks | None = None,
+    console_output: bool = True,
+):
+    """Initialize the Windows runtime without entering a blocking loop."""
+    if runtime_started:
+        return bool(gui_controller)
+
+    visualization_available = prepare_runtime(
+        runtime_config=runtime_config,
+        device_index=device_index,
+        callbacks=callbacks,
+        console_output=console_output,
+    )
+    start_hotkey_listener()
+
+    return visualization_available
+
+
+def shutdown_runtime() -> None:
+    """Stop the Windows runtime and release listeners/resources."""
+    global stream, listener, gui_controller, runtime_started, runtime_prepared, state
+
+    if stream:
+        try:
+            stream.stop()
+            stream.close()
+        except Exception:
+            pass
+        stream = None
+
+    if listener:
+        try:
+            listener.stop()
+        except Exception:
+            pass
+        listener = None
+
+    if gui_controller:
+        try:
+            gui_controller.quit()
+        except Exception:
+            pass
+        gui_controller = None
+
+    with state_lock:
+        state = State.IDLE
+    runtime_started = False
+    runtime_prepared = False
+
+
+def is_runtime_active() -> bool:
+    """Return whether the background runtime is currently active."""
+    return bool(runtime_started and listener and listener.is_alive())
+
+
+def main() -> None:
+    """Run the Windows runtime."""
+    global config
+
+    config = parse_args()
+
+    _print("Vocal-Scriber - Voice Typing for Your Terminal")
+    _print("=" * 45)
+    _print(f"System: {SYSTEM}")
+    _print(f"Default local backend: PyTorch Whisper ({DEFAULT_MODEL})")
+
+    visualization_available = initialize_runtime(
+        runtime_config=config,
+        device_index=None,
+        callbacks=RuntimeCallbacks(),
+        console_output=True,
+    )
+
+    _print("\nReady! Press F9 to record.")
+    if visualization_available:
+        _print("Floating window visualization enabled")
+    _print("Press Ctrl+C to exit.\n")
+
     shutdown_requested = False
 
+    def signal_handler(sig, frame):
+        nonlocal shutdown_requested
+        shutdown_requested = True
+        _print("\nShutting down...")
+        shutdown_runtime()
+
     try:
-        def signal_handler(sig, frame):
-            nonlocal shutdown_requested, listener
-            shutdown_requested = True
-            print("\nShutting down...")
-
-            if stream:
-                try:
-                    stream.stop()
-                    stream.close()
-                except Exception:
-                    pass
-
-            if listener:
-                try:
-                    listener.stop()
-                except Exception:
-                    pass
-
-            if gui_controller:
-                try:
-                    gui_controller.quit()
-                except Exception:
-                    pass
-
         signal.signal(signal.SIGINT, signal_handler)
 
-        if not visualization_available:
-            listener = keyboard.Listener(on_press=handler)
-            listener.start()
-            while listener.is_alive() and not shutdown_requested:
-                listener.join(0.5)
-        else:
-            def start_keyboard_listener():
-                nonlocal listener
-                with keyboard.Listener(on_press=handler) as listener:
-                    listener.join()
-
-            keyboard_thread = threading.Thread(target=start_keyboard_listener, daemon=True)
-            keyboard_thread.start()
+        if visualization_available and gui_controller:
             gui_controller.run_mainloop()
+        else:
+            while listener and listener.is_alive() and not shutdown_requested:
+                listener.join(0.5)
     except KeyboardInterrupt:
-        print("\nBye!")
+        _print("\nBye!")
+    finally:
+        shutdown_runtime()
 
 
 if __name__ == "__main__":

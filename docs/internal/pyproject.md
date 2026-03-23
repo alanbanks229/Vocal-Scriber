@@ -24,7 +24,8 @@ In this repo, `pyproject.toml` defines:
   `numpy`, `scipy`, `sounddevice`, `pynput`, `pyperclip`, `requests`, `screeninfo`
 - optional platform extras:
   - `macos`: `faster-whisper`, `pyobjc-framework-Cocoa`
-  - `windows`: `openai-whisper`, `pyautogui`
+  - `windows`: `openai-whisper`, `pyautogui`, `pystray`, `pillow`
+  - `windows-build`: `pyinstaller`
 - package layout:
   code lives under [`src/vocal_scriber/`](/C:/Users/Alan/Local_Documents/Github/Vocal-Scriber/src/vocal_scriber)
 

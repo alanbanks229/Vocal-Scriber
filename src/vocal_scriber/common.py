@@ -100,7 +100,7 @@ def suppress_stdout():
             sys.stdout = old_stdout
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse shared CLI arguments."""
     parser = argparse.ArgumentParser(
         description="Push-to-talk voice typing for your terminal.",
@@ -110,7 +110,6 @@ Examples:
   python -m vocal_scriber
   python -m vocal_scriber --api http://localhost:8002/transcribe
   python -m vocal_scriber --model base
-  python -m vocal_scriber --debug --device
   python -m vocal_scriber --vocab "Kubernetes,Docker,React"
         """,
     )
@@ -145,11 +144,6 @@ Examples:
         type=float,
         default=0.005,
         help="Audio energy threshold for speech detection (default: 0.005)",
-    )
-    parser.add_argument(
-        "--device",
-        action="store_true",
-        help="Show interactive microphone device selector",
     )
     parser.add_argument(
         "--gui",
@@ -210,7 +204,7 @@ Examples:
         help="GUI color theme (default: dark)",
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.no_gui:
         args.gui = False
     return args
@@ -265,17 +259,133 @@ def _normalize_windows_display_name(name: str) -> str | None:
     return display_name
 
 
-def _windows_group_prefix(display_name: str) -> str | None:
-    """Return a stable prefix we can use to collapse backend aliases for the same mic."""
-    prefix = display_name.split("(", 1)[0].strip().lower()
-    if not prefix or prefix in WINDOWS_GENERIC_GROUP_PREFIXES or len(prefix) < 8:
-        return None
-    return prefix
+def _is_generic_windows_group_prefix(prefix: str) -> bool:
+    """Return whether a Windows input label prefix is generic rather than device-specific."""
+    normalized_prefix = prefix.strip().lower()
+    if not normalized_prefix:
+        return False
+
+    prefix_words = normalized_prefix.split()
+    return (
+        normalized_prefix in WINDOWS_GENERIC_GROUP_PREFIXES
+        or bool(prefix_words and prefix_words[0] in WINDOWS_GENERIC_GROUP_PREFIXES)
+    )
+
+
+def _parse_windows_display_name(display_name: str) -> dict[str, str | bool]:
+    """Split a Windows display name into parts for duplicate matching."""
+    prefix, separator, remainder = display_name.partition("(")
+    normalized_prefix = prefix.strip().lower()
+    detail = remainder.strip() if separator else ""
+    has_closing_paren = bool(separator and display_name.rstrip().endswith(")"))
+
+    if detail.endswith(")"):
+        detail = detail[:-1].rstrip()
+
+    return {
+        "normalized": display_name.lower(),
+        "prefix": normalized_prefix,
+        "detail": detail.lower(),
+        "has_paren": bool(separator),
+        "has_closing_paren": has_closing_paren,
+        "is_generic_prefix": _is_generic_windows_group_prefix(prefix),
+    }
+
+
+def _windows_display_names_match(left_display_name: str, right_display_name: str) -> bool:
+    """Return whether two Windows input labels describe the same logical microphone."""
+    left = _parse_windows_display_name(left_display_name)
+    right = _parse_windows_display_name(right_display_name)
+
+    if left["normalized"] == right["normalized"]:
+        return True
+
+    left_prefix = str(left["prefix"])
+    right_prefix = str(right["prefix"])
+    if not left_prefix or left_prefix != right_prefix or len(left_prefix) < 8:
+        return False
+
+    if not bool(left["is_generic_prefix"]) and not bool(right["is_generic_prefix"]):
+        return True
+
+    left_detail = str(left["detail"])
+    right_detail = str(right["detail"])
+    if not left_detail or not right_detail:
+        return False
+
+    if left_detail == right_detail:
+        return True
+
+    shorter, longer = sorted((left, right), key=lambda part: len(str(part["detail"])))
+    short_detail = str(shorter["detail"])
+    long_detail = str(longer["detail"])
+    if len(short_detail) < 8:
+        return False
+
+    return (
+        long_detail.startswith(short_detail)
+        and not bool(shorter["has_closing_paren"])
+        and bool(longer["has_closing_paren"])
+    )
+
+
+def _windows_device_channel_count(device: dict) -> int:
+    """Return a comparable input-channel count across collapsed and raw device shapes."""
+    channels = device.get("channels", device.get("max_input_channels", 0))
+    try:
+        return int(channels)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _windows_device_sample_rate(device: dict) -> int:
+    """Return a comparable rounded sample rate across collapsed and raw device shapes."""
+    sample_rate = device.get("sample_rate", device.get("default_samplerate", 0))
+    try:
+        return int(round(float(sample_rate)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _windows_devices_share_identity(left_device: dict, right_device: dict) -> bool:
+    """Return whether two Windows device entries refer to the same physical mic."""
+    left_display_name = _normalize_windows_display_name(left_device["name"])
+    right_display_name = _normalize_windows_display_name(right_device["name"])
+    if not left_display_name or not right_display_name:
+        return False
+
+    if not _windows_display_names_match(left_display_name, right_display_name):
+        return False
+
+    if left_display_name.lower() == right_display_name.lower():
+        return True
+
+    left_channels = _windows_device_channel_count(left_device)
+    right_channels = _windows_device_channel_count(right_device)
+    if left_channels and right_channels and left_channels != right_channels:
+        return False
+
+    left_sample_rate = _windows_device_sample_rate(left_device)
+    right_sample_rate = _windows_device_sample_rate(right_device)
+    if left_sample_rate and right_sample_rate and left_sample_rate != right_sample_rate:
+        return False
+
+    return True
 
 
 def _windows_input_device_sort_key(device: dict) -> tuple[int, int]:
-    """Prefer the friendliest Windows backend when collapsing duplicate mic entries."""
+    """Prefer the most stable backend when picking the logical mic's runtime index."""
     return (
+        WINDOWS_DEVICE_MENU_PRIORITY.get(device["hostapi"], 99),
+        device["index"],
+    )
+
+
+def _windows_display_name_sort_key(device: dict) -> tuple[int, int, int, int]:
+    """Prefer the fullest display label while avoiding MME-only truncation when possible."""
+    return (
+        -len(device["display_name"]),
+        1 if device["hostapi"] == "MME" else 0,
         WINDOWS_DEVICE_MENU_PRIORITY.get(device["hostapi"], 99),
         device["index"],
     )
@@ -283,9 +393,7 @@ def _windows_input_device_sort_key(device: dict) -> tuple[int, int]:
 
 def _collapse_windows_input_devices(input_devices: list[dict]) -> list[dict]:
     """Collapse raw Windows host API duplicates into one logical mic entry."""
-    groups: dict[str, list[dict]] = {}
-    ordered_keys: list[str] = []
-    prefix_to_group_key: dict[str, str] = {}
+    groups: list[list[dict]] = []
 
     for device in input_devices:
         display_name = _normalize_windows_display_name(device["name"])
@@ -294,27 +402,26 @@ def _collapse_windows_input_devices(input_devices: list[dict]) -> list[dict]:
 
         candidate = dict(device)
         candidate["display_name"] = display_name
-        exact_key = display_name.lower()
-        prefix_key = _windows_group_prefix(display_name)
-
-        if exact_key in groups:
-            group_key = exact_key
-        elif prefix_key and prefix_key in prefix_to_group_key:
-            group_key = prefix_to_group_key[prefix_key]
+        matching_group = next(
+            (
+                group
+                for group in groups
+                if any(_windows_devices_share_identity(candidate, existing) for existing in group)
+            ),
+            None,
+        )
+        if matching_group is None:
+            groups.append([candidate])
         else:
-            group_key = exact_key
-            groups[group_key] = []
-            ordered_keys.append(group_key)
-            if prefix_key:
-                prefix_to_group_key[prefix_key] = group_key
-
-        groups[group_key].append(candidate)
+            matching_group.append(candidate)
 
     collapsed_devices: list[dict] = []
-    for group_key in ordered_keys:
-        candidates = sorted(groups[group_key], key=_windows_input_device_sort_key)
+    for group in groups:
+        candidates = sorted(group, key=_windows_input_device_sort_key)
+        display_candidate = sorted(group, key=_windows_display_name_sort_key)[0]
         representative = candidates[0].copy()
-        representative["name"] = representative.pop("display_name")
+        representative["name"] = display_candidate["display_name"]
+        representative.pop("display_name", None)
         representative["is_default"] = any(candidate["is_default"] for candidate in candidates)
         representative["hostapis"] = list(dict.fromkeys(candidate["hostapi"] for candidate in candidates))
         collapsed_devices.append(representative)
@@ -433,18 +540,30 @@ def get_supported_input_sample_rate(
 
 def set_terminal_title(title: str) -> None:
     """Set terminal title."""
-    sys.stdout.write(f"\033]0;{title}\007")
-    sys.stdout.flush()
+    stdout = getattr(sys, "stdout", None)
+    if stdout is None or not hasattr(stdout, "write"):
+        return
+    try:
+        stdout.write(f"\033]0;{title}\007")
+        stdout.flush()
+    except Exception:
+        return
 
 
 def show_status(status: str, detail: str = "") -> None:
     """Print a status line without fancy Unicode."""
-    sys.stdout.write("\n")
-    if detail:
-        print(f"{status} {detail}")
-    else:
-        print(status)
-    sys.stdout.flush()
+    stdout = getattr(sys, "stdout", None)
+    if stdout is None or not hasattr(stdout, "write"):
+        return
+    try:
+        stdout.write("\n")
+        if detail:
+            print(f"{status} {detail}")
+        else:
+            print(status)
+        stdout.flush()
+    except Exception:
+        return
 
 
 def play_beep(freq: float, duration: float, volume: float = 0.12) -> None:

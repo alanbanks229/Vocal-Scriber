@@ -36,6 +36,8 @@ The setup scripts create `.venv`, activate it, and install the package in editab
 python -m vocal_scriber
 ```
 
+The default startup flow prompts you to choose a microphone before the app becomes ready.
+
 Examples:
 
 ```bash
@@ -70,6 +72,7 @@ Press `Ctrl+C` in the Vocal-Scriber terminal to stop the app.
 - Uses `openai-whisper` on top of PyTorch
 - Prefers GPU automatically when `torch.cuda.is_available()` is true
 - Falls back to CPU automatically if CUDA is unavailable or runtime init fails
+- `python -m vocal_scriber` prompts for microphone selection by default
 - Collapses duplicate host-API microphone entries into a cleaner logical device list
 
 ### Windows CUDA 13
@@ -83,6 +86,36 @@ python -c "import torch; print(torch.cuda.is_available()); print(torch.version.c
 ```
 
 More detail is in [docs/windows/cuda.md](docs/windows/cuda.md).
+
+## Windows App Packaging
+
+For non-developer sharing, the repo now includes a packaged Windows tray-app path.
+
+Build it with:
+
+```powershell
+.\scripts\build-windows-app.ps1
+```
+
+For faster debugging without waiting on installer compression:
+
+```powershell
+.\scripts\build-windows-app.ps1 -BundleOnly
+```
+
+That build creates:
+
+- a `PyInstaller` `onedir` app bundle under `dist\Vocal-Scriber`
+- an Inno Setup installer under `dist\installer` when `iscc` is installed
+
+The packaged app:
+
+- launches without a terminal window
+- prompts for microphone selection on first launch
+- downloads the Whisper model on first launch if needed
+- keeps running in the system tray so `F9` works in the background
+
+Build and distribution notes are in [docs/windows/app-packaging.md](docs/windows/app-packaging.md).
 
 ## Troubleshooting
 
@@ -132,6 +165,7 @@ python -m pip install -r tools/diarization/requirements.txt
 src/vocal_scriber/          # Main package
 scripts/                    # Platform setup helpers
 docs/windows/               # Windows runtime notes
+packaging/windows/          # Windows app packaging assets
 docs/internal/              # Internal engineering notes
 tools/diarization/          # Separate macOS-only diarization workflow
 ```
