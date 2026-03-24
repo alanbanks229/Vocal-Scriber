@@ -4,12 +4,12 @@ Speaker Diarization for Vocal-Scriber
 Uses MLX-optimized VibeVoice-ASR for Apple Silicon acceleration.
 
 This is a standalone script for processing audio files with speaker identification.
-NOT for real-time push-to-talk (use vocal-scriber.py for that).
+NOT for real-time push-to-talk (use `python -m vocal_scriber` for that).
 
 Usage:
-    python diarize.py audio.wav
-    python diarize.py meeting.mp3 --context "Claude, Anthropic, Docker"
-    python diarize.py audio.wav --output transcript.txt
+    python tools/diarization/diarize.py audio.wav
+    python tools/diarization/diarize.py meeting.mp3 --context "Claude, Anthropic, Docker"
+    python tools/diarization/diarize.py audio.wav --output transcript.txt
 
 Environment Variables:
     DIARIZE_MODEL - Specify custom MLX-format speech model
@@ -35,7 +35,7 @@ def load_env_file():
     """Load environment variables from .env file if it exists."""
     try:
         from dotenv import load_dotenv
-        env_path = Path(__file__).parent / ".env"
+        env_path = Path(__file__).resolve().parents[2] / ".env"
         if env_path.exists():
             load_dotenv(env_path)
             if os.getenv("HF_TOKEN"):
@@ -143,11 +143,11 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python diarize.py meeting.wav
-  python diarize.py audio.mp3 --context "Claude, Anthropic, MLX, Docker"
-  python diarize.py interview.wav --output transcript.txt
-  python diarize.py audio.wav --output result.json
-  python diarize.py audio.wav --verbose --debug
+  python tools/diarization/diarize.py meeting.wav
+  python tools/diarization/diarize.py audio.mp3 --context "Claude, Anthropic, MLX, Docker"
+  python tools/diarization/diarize.py interview.wav --output transcript.txt
+  python tools/diarization/diarize.py audio.wav --output result.json
+  python tools/diarization/diarize.py audio.wav --verbose --debug
         """
     )
     parser.add_argument("audio_file", help="Audio file to process (WAV, MP3, M4A, FLAC)")
@@ -179,7 +179,7 @@ def load_model():
     except ImportError:
         print("\nERROR: MLX-Audio not installed.")
         print("\nInstall with:")
-        print("  pip install -r requirements-diarization.txt")
+        print("  pip install -r tools/diarization/requirements.txt")
         print("\nThis will install:")
         print("  - mlx (Apple's ML framework)")
         print("  - mlx-audio (VibeVoice-ASR support)")
@@ -394,11 +394,11 @@ def main():
     # Load environment variables from .env file
     load_env_file()
 
-    # Check platform
-    check_apple_silicon()
-
     # Parse arguments
     args = parse_args()
+
+    # Check platform
+    check_apple_silicon()
 
     # Validate audio file
     audio_file = validate_audio_file(args.audio_file)

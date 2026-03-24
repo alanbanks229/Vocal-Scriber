@@ -61,17 +61,27 @@ class MenuBarWaveform(NSObject):
     def _create_status_item(self):
         """Create NSStatusItem in menu bar."""
         try:
+            if self.config.debug:
+                print("[DEBUG] MenuBarWaveform: Importing Cocoa...")
             from Cocoa import NSStatusBar, NSVariableStatusItemLength
 
+            if self.config.debug:
+                print("[DEBUG] MenuBarWaveform: Creating status bar item...")
             status_bar = NSStatusBar.systemStatusBar()
             self.status_item = status_bar.statusItemWithLength_(NSVariableStatusItemLength)
 
+            if self.config.debug:
+                print("[DEBUG] MenuBarWaveform: Updating initial icon...")
             # Set initial icon (flat line - no audio)
             self._update_icon()
 
+            if self.config.debug:
+                print("[DEBUG] MenuBarWaveform: Creating menu...")
             # Create dropdown menu
             self._create_menu()
 
+            if self.config.debug:
+                print("[DEBUG] MenuBarWaveform: Setting tooltip...")
             # Set tooltip
             button = self.status_item.button()
             if button:
@@ -278,7 +288,7 @@ class MenuBarWaveform(NSObject):
         Called periodically by NSTimer to check if the keyboard thread has died
         or the app has been signaled to quit. If so, stops the NSApplication run loop.
         """
-        # This will be checked by vocal-scriber.py - if the keyboard thread dies
+        # This is checked by the macOS runtime - if the keyboard thread dies
         # or the running flag is set to False, the app will call stop() on us,
         # which will then call NSApplication.sharedApplication().stop_()
         pass
