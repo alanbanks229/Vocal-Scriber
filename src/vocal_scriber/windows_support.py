@@ -98,8 +98,6 @@ def build_runtime_config(settings: dict[str, Any]):
     config = parse_args([])
     config.model = settings.get("model") or DEFAULT_MODEL
     config.debug = bool(settings.get("debug", False))
-    config.gui = False
-    config.no_gui = True
     config.model_download_root = str(get_model_cache_dir())
     return config
 

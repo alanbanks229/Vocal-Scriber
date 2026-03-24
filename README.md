@@ -44,8 +44,6 @@ Examples:
 python -m vocal_scriber --debug
 python -m vocal_scriber --model base
 python -m vocal_scriber --vocab "Claude,Anthropic,Docker,Kubernetes"
-python -m vocal_scriber --gui
-python -m vocal_scriber --no-gui
 python -m vocal_scriber --api http://localhost:8002/transcribe
 ```
 
@@ -64,8 +62,7 @@ Press `Ctrl+C` in the Vocal-Scriber terminal to stop the app.
 ### macOS
 
 - Uses `faster-whisper`
-- Menu bar waveform is the default visualization
-- `--gui` switches to the floating waveform window
+- Menu bar icon shows recording status and waveform visualization
 
 ### Windows
 

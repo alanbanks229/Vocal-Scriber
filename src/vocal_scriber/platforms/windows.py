@@ -20,8 +20,6 @@ from pynput import keyboard
 
 from ..common import (
     DEFAULT_MODEL,
-    GUI_AVAILABLE,
-    GUIController,
     LANGUAGE,
     SAMPLE_RATE,
     build_initial_prompt,
@@ -227,9 +225,6 @@ def open_input_stream_with_fallback():
 def check_dependencies() -> None:
     """Verify runtime prerequisites."""
     ensure_microphone_available()
-    if config.gui and not GUI_AVAILABLE:
-        _print("Warning: tkinter not available, GUI disabled")
-        config.gui = False
 
 
 def load_whisper_model() -> None:
@@ -557,17 +552,8 @@ def prepare_runtime(
     _emit_status("[STARTING]", "Loading Whisper model...")
     load_whisper_model()
 
+    # No visualization on Windows (audio-only mode)
     visualization_available = False
-    if config.gui and GUI_AVAILABLE:
-        try:
-            gui_controller = GUIController(config)
-            gui_controller.create_window()
-            visualization_available = True
-            _emit_debug("[DEBUG] Floating window GUI initialized")
-        except Exception as exc:
-            _emit_debug(f"[DEBUG] GUI window initialization failed: {exc}")
-            config.gui = False
-            gui_controller = None
 
     runtime_prepared = True
     return visualization_available

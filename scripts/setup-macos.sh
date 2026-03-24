@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 
-set -euo pipefail
+# This script must be sourced, not executed
+# Usage: source scripts/setup-macos.sh (from repo root)
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+# Use git to find repo root (more portable than shell-specific source detection)
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 VENV_DIR="${REPO_ROOT}/.venv"
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  echo "Run this script with: source scripts/setup-macos.sh"
-  exit 1
-fi
+# Use -e and -o pipefail but not -u since this is a sourced script
+# -u would affect the user's shell session after sourcing
+set -eo pipefail
 
 cd "${REPO_ROOT}"
 

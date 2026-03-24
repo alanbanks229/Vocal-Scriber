@@ -17,7 +17,6 @@ from pynput import keyboard
 
 from ..common import (
     DEFAULT_MODEL,
-    GUI_AVAILABLE,
     GUIController,
     LANGUAGE,
     SAMPLE_RATE,
@@ -82,9 +81,6 @@ def switch_audio_device(device_index: int) -> None:
 def check_dependencies() -> None:
     """Verify runtime prerequisites."""
     ensure_microphone_available()
-    if config.gui and not GUI_AVAILABLE:
-        print("Warning: tkinter not available, GUI disabled")
-        config.gui = False
 
 
 def load_whisper_model() -> None:
@@ -121,45 +117,21 @@ def load_whisper_model() -> None:
 
     print(f"Loading Whisper model '{config.model}'... (first run downloads ~150MB)")
 
-    runtime_candidates: list[tuple[str, str]] = []
-    try:
-        if ctranslate2.get_cuda_device_count() > 0:
-            runtime_candidates.append(("cuda", "auto"))
-    except Exception as exc:
-        if config.debug:
-            print(f"[DEBUG] Could not query CUDA devices: {exc}")
+    # Let faster-whisper automatically select best device
+    # On macOS, this will use optimized CPU with SIMD instructions
+    candidate_model = WhisperModel(
+        config.model,
+        device="auto",
+        compute_type="auto",
+    )
 
-    runtime_candidates.append(("cpu", "auto"))
-    last_error = None
+    # Warm up model to ensure it's ready
+    warm_up_model(candidate_model)
 
-    for device_name, compute_type in runtime_candidates:
-        try:
-            if device_name == "cuda":
-                print("Trying GPU acceleration for Whisper...")
-
-            candidate_model = WhisperModel(
-                config.model,
-                device=device_name,
-                compute_type=compute_type,
-            )
-
-            if device_name == "cuda":
-                warm_up_model(candidate_model)
-
-            whisper_model = candidate_model
-            whisper_device = device_name
-            whisper_compute_type = compute_type
-            runtime_label = "GPU" if device_name == "cuda" else "CPU"
-            print(f"Model loaded on {runtime_label}.")
-            return
-        except Exception as exc:
-            last_error = exc
-            if config.debug:
-                print(f"[DEBUG] Whisper init failed on {device_name}: {exc}")
-            elif device_name == "cuda":
-                print("GPU unavailable for Whisper; falling back to CPU.")
-
-    raise last_error if last_error is not None else RuntimeError("Unable to initialize Whisper model")
+    whisper_model = candidate_model
+    whisper_device = "auto"
+    whisper_compute_type = "auto"
+    print("Model loaded.")
 
 
 def beep_start() -> None:
@@ -399,68 +371,61 @@ def main() -> None:
     selected_device = select_audio_device()
     load_whisper_model()
 
+    # Create menu bar icon (macOS only)
     visualization_available = False
+    gui_controller = None
 
-    if config.gui and GUI_AVAILABLE:
-        try:
-            gui_controller = GUIController(config)
-            gui_controller.create_window()
+    try:
+        from Cocoa import NSStatusBar  # noqa: F401
+
+        if config.debug:
+            print("[DEBUG] Creating GUIController...")
+        gui_controller = GUIController(config)
+
+        def quit_from_menu():
+            if config.debug:
+                print("\n[DEBUG] Quit requested from menu bar")
+            if gui_controller:
+                gui_controller.stop()
+            raise SystemExit(0)
+
+        if config.debug:
+            print("[DEBUG] Setting quit_callback...")
+        gui_controller.quit_callback = quit_from_menu
+
+        if config.debug:
+            print("[DEBUG] Calling create_window...")
+        gui_controller.create_window()
+
+        if config.debug:
+            print("[DEBUG] Configuring menu bar callbacks...")
+        if gui_controller.menubar_waveform:
+            current_device = selected_device
+            if current_device is None:
+                current_device = sd.default.device[0]
+            gui_controller.menubar_waveform.set_current_device(current_device)
+            gui_controller.menubar_waveform.device_change_callback = switch_audio_device
+            gui_controller.menubar_waveform.quit_callback = quit_from_menu
             visualization_available = True
             if config.debug:
-                print("[DEBUG] Floating window GUI initialized")
-        except Exception as exc:
-            if config.debug:
-                print(f"[DEBUG] GUI window initialization failed: {exc}")
-            config.gui = False
-            gui_controller = None
-    elif not config.gui:
-        try:
-            try:
-                from Cocoa import NSStatusBar  # noqa: F401
-            except ImportError:
-                print("\nWarning: menu bar icon unavailable.")
-                print("PyObjC is not installed. Install the package with the [macos] extra to enable it.\n")
-                gui_controller = None
-            else:
-                gui_controller = GUIController(config)
-
-                def quit_from_menu():
-                    if config.debug:
-                        print("\n[DEBUG] Quit requested from menu bar")
-                    if gui_controller:
-                        gui_controller.stop()
-                    raise SystemExit(0)
-
-                gui_controller.quit_callback = quit_from_menu
-                gui_controller.create_window()
-
-                if gui_controller.menubar_waveform:
-                    current_device = selected_device
-                    if current_device is None:
-                        current_device = sd.default.device[0]
-                    gui_controller.menubar_waveform.set_current_device(current_device)
-                    gui_controller.menubar_waveform.device_change_callback = switch_audio_device
-                    gui_controller.menubar_waveform.quit_callback = quit_from_menu
-
-                visualization_available = True
-                if config.debug:
-                    print("[DEBUG] Menu bar visualization initialized (default mode)")
-        except Exception as exc:
-            if config.debug:
-                print(f"[DEBUG] Menu bar initialization failed: {exc}")
-            else:
-                print(f"\nWarning: could not create menu bar icon: {exc}\n")
-            gui_controller = None
+                print("[DEBUG] Menu bar visualization initialized")
+    except ImportError:
+        print("\nWarning: PyObjC not installed. Menu bar icon unavailable.")
+        print("Install the package with the [macos] extra to enable it.\n")
+    except Exception as exc:
+        if config.debug:
+            print(f"[DEBUG] Menu bar initialization failed: {exc}")
+            import traceback
+            traceback.print_exc()
+        else:
+            print(f"\nWarning: could not create menu bar icon: {exc}\n")
 
     hotkey = keyboard.Key.f9
     set_terminal_title("Vocal-Scriber - Ready")
 
     print("\nReady! Press F9 to record.")
     if visualization_available:
-        if config.gui:
-            print("Floating window visualization enabled")
-        else:
-            print("Menu bar visualization enabled (use --gui for floating window)")
+        print("Menu bar visualization enabled")
     print("Press Ctrl+C to exit.\n")
 
     handler = create_hotkey_handler(hotkey)
@@ -506,9 +471,7 @@ def main() -> None:
 
             if gui_controller:
                 try:
-                    if config.gui:
-                        gui_controller.quit()
-                    elif gui_controller.menubar_waveform and gui_controller.menubar_waveform.quit_callback:
+                    if gui_controller.menubar_waveform and gui_controller.menubar_waveform.quit_callback:
                         gui_controller.menubar_waveform.quit_callback()
                     else:
                         gui_controller.stop()
@@ -522,15 +485,6 @@ def main() -> None:
             listener.start()
             while listener.is_alive() and not shutdown_requested:
                 listener.join(0.5)
-        elif config.gui:
-            def start_keyboard_listener():
-                nonlocal listener
-                with keyboard.Listener(on_press=handler) as listener:
-                    listener.join()
-
-            keyboard_thread = threading.Thread(target=start_keyboard_listener, daemon=True)
-            keyboard_thread.start()
-            gui_controller.run_mainloop()
         else:
             def start_keyboard_listener():
                 nonlocal listener

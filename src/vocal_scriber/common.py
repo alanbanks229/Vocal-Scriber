@@ -50,13 +50,10 @@ WINDOWS_GENERIC_GROUP_PREFIXES = {
     "speaker",
 }
 
-GUI_AVAILABLE = False
+# Menu bar controller (macOS only, uses PyObjC not tkinter)
 GUIController = None
 try:
-    import tkinter as _tk  # noqa: F401
     from .ui.controller import GUIController
-
-    GUI_AVAILABLE = True
 except ImportError:
     pass
 
@@ -145,68 +142,8 @@ Examples:
         default=0.005,
         help="Audio energy threshold for speech detection (default: 0.005)",
     )
-    parser.add_argument(
-        "--gui",
-        action="store_true",
-        default=False,
-        help="Enable floating window visualization",
-    )
-    parser.add_argument(
-        "--no-gui",
-        action="store_true",
-        help="Disable all visualization (audio-only mode)",
-    )
-    parser.add_argument(
-        "--gui-position",
-        default="bottom-center",
-        choices=["bottom-center", "top-center", "bottom-left", "bottom-right"],
-        help="GUI window position (default: bottom-center)",
-    )
-    parser.add_argument(
-        "--gui-offset-x",
-        type=int,
-        default=0,
-        help="Horizontal offset from gui-position in pixels (default: 0)",
-    )
-    parser.add_argument(
-        "--gui-offset-y",
-        type=int,
-        default=-50,
-        help="Vertical offset from gui-position in pixels (default: -50)",
-    )
-    parser.add_argument(
-        "--gui-monitor",
-        default="active",
-        help="Monitor for GUI: 'active', 'primary', or index (default: active)",
-    )
-    parser.add_argument(
-        "--gui-width",
-        type=int,
-        default=400,
-        help="GUI window width in pixels (default: 400)",
-    )
-    parser.add_argument(
-        "--gui-height",
-        type=int,
-        default=100,
-        help="GUI window height in pixels (default: 100)",
-    )
-    parser.add_argument(
-        "--gui-opacity",
-        type=float,
-        default=0.85,
-        help="GUI window transparency 0.0-1.0 (default: 0.85)",
-    )
-    parser.add_argument(
-        "--gui-theme",
-        default="dark",
-        choices=["dark", "light"],
-        help="GUI color theme (default: dark)",
-    )
 
     args = parser.parse_args(argv)
-    if args.no_gui:
-        args.gui = False
     return args
 
 

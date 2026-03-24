@@ -61,17 +61,27 @@ class MenuBarWaveform(NSObject):
     def _create_status_item(self):
         """Create NSStatusItem in menu bar."""
         try:
+            if self.config.debug:
+                print("[DEBUG] MenuBarWaveform: Importing Cocoa...")
             from Cocoa import NSStatusBar, NSVariableStatusItemLength
 
+            if self.config.debug:
+                print("[DEBUG] MenuBarWaveform: Creating status bar item...")
             status_bar = NSStatusBar.systemStatusBar()
             self.status_item = status_bar.statusItemWithLength_(NSVariableStatusItemLength)
 
+            if self.config.debug:
+                print("[DEBUG] MenuBarWaveform: Updating initial icon...")
             # Set initial icon (flat line - no audio)
             self._update_icon()
 
+            if self.config.debug:
+                print("[DEBUG] MenuBarWaveform: Creating menu...")
             # Create dropdown menu
             self._create_menu()
 
+            if self.config.debug:
+                print("[DEBUG] MenuBarWaveform: Setting tooltip...")
             # Set tooltip
             button = self.status_item.button()
             if button:
